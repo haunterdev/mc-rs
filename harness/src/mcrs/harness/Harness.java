@@ -73,6 +73,8 @@ public final class Harness {
             int[] box = new int[6];
             for (int i = 0; i < 6; i++) box[i] = Integer.parseInt(args[4 + i]);
             Pop.trace(Long.parseLong(args[1]), Integer.parseInt(args[2]), Integer.parseInt(args[3]), box);
+        } else if (mode.equals("creative")) {
+            Creative.run(new File(args[1]));
         } else if (mode.equals("bench")) {
             Bench.run(Long.parseLong(args[1]), Integer.parseInt(args[2]));
         } else {

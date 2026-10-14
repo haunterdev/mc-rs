@@ -40,7 +40,7 @@ impl Container {
     /// `ContainerPlayer` always answers true.
     pub fn can_interact_with(&self, block_at_pos: u16, player_pos: [f64; 3]) -> bool {
         match self.kind {
-            ContainerKind::Player => true,
+            ContainerKind::Player | ContainerKind::Creative => true,
             ContainerKind::Workbench { pos } => {
                 if block_at_pos != block::CRAFTING_TABLE {
                     return false;

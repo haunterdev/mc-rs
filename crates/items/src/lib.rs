@@ -13,6 +13,8 @@
 
 pub mod blocks_table;
 pub mod crafting;
+pub mod creative;
+pub mod creative_table;
 pub mod dig;
 pub mod drop_rules;
 pub mod drops;
@@ -36,6 +38,6 @@ pub use inventory::PlayerInventory;
 pub use recipe_json::RecipeError;
 pub use registry::{ItemDef, Kind, Names};
 pub use smelting::Furnace;
-pub use stack::ItemStack;
+pub use stack::{ItemStack, Tag};
 pub use tools::{ArmorMaterial, ArmorSlot, ToolClass, ToolMaterial};
 pub use worldgen::JavaRandom;

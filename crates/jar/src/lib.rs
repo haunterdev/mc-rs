@@ -79,6 +79,11 @@ impl Jar {
         Ok(Jar { data, entries })
     }
 
+    /// Every entry name, in no order.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.entries.keys().map(String::as_str)
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.entries.contains_key(name)
     }

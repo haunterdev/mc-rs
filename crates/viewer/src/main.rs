@@ -1,12 +1,13 @@
 //! Viewer for the mc-rs terrain port: walk or fly through the generated world as a creative
 //! player.
 //!
-//! `viewer [--seed S] [--radius R] [--workers N] [--hide-gui] [--menu] [--smoke SECONDS [--shot FILE.png] [--at X,Y,Z,YAW,PITCH] [--set KEY:VALUE]...]`
+//! `viewer [--seed S] [--radius R] [--workers N] [--hide-gui] [--menu] [--screen creative[:TAB]] [--smoke SECONDS [--shot FILE.png] [--at X,Y,Z,YAW,PITCH] [--set KEY:VALUE]...]`
 //!
 //! `--seed` takes a number, or any other text, which is hashed like Java's `String.hashCode`.
 //! `--radius` overrides the render distance in the options file for this run.
 //! `--hide-gui` starts with the GUI hidden, as F1 does. `--menu` opens the options menu on the
-//! first frame, so a `--shot` shows it.
+//! first frame, so a `--shot` shows it. `--screen creative` opens the creative inventory on the
+//! first frame, on the tab with that label (`buildingBlocks`, the default, `search`, `inventory`, ...).
 //! `--smoke` runs headless with a hidden window and default options, flies the player along +x
 //! while stepping through the AA, lighting and time options, prints the stats and exits; nonzero
 //! if no chunk got meshed. With `--shot` it stands at `--at` instead (eye position, yaw and pitch
@@ -75,6 +76,7 @@ mod populator;
 mod region;
 mod settings;
 mod sfx;
+mod sign;
 mod sky;
 mod stream;
 mod survival;
@@ -139,6 +141,8 @@ pub struct Args {
     set: Vec<String>,
     hide_gui: bool,
     menu: bool,
+    /// `--screen creative[:TAB]`
+    screen: Option<items::creative::Tab>,
     uncapped: bool,
     pub stream: Option<link::StreamArgs>,
     pub join: Option<join::JoinArgs>,
@@ -165,6 +169,7 @@ fn parse_args() -> Args {
         set: Vec::new(),
         hide_gui: false,
         menu: false,
+        screen: None,
         uncapped: false,
         stream: None,
         join: None,
@@ -202,6 +207,13 @@ fn parse_args() -> Args {
             "--set" => a.set.push(value()),
             "--hide-gui" => a.hide_gui = true,
             "--menu" => a.menu = true,
+            "--screen" => {
+                let v = value();
+                let tab = v.strip_prefix("creative").expect("--screen takes creative[:TAB]");
+                let label = tab.strip_prefix(':').unwrap_or("buildingBlocks");
+                let found = items::creative::Tab::ALL.into_iter().find(|t| t.label() == label);
+                a.screen = Some(found.unwrap_or_else(|| panic!("--screen: no creative tab {label}")));
+            }
             "--uncapped" => a.uncapped = true,
             _ => panic!("unknown argument {flag}; see the top of main.rs"),
         }
@@ -229,11 +241,31 @@ struct Loaded {
     icons: Argb,
     widgets: Argb,
     font: Argb,
+    sign: Argb,
+    tabs: Argb,
+    /// `tab_items.png`, `tab_item_search.png`, `tab_inventory.png`
+    backgrounds: [Argb; 3],
+    empty_slots: Argb,
+    lang: Vec<u8>,
 }
 
 /// The block models and their sprite array, kept for rebuilding the array on a mipmap change.
 #[derive(Resource)]
 pub(crate) struct Atlas(pub(crate) Arc<Models>);
+
+/// 16 x 16 sprites side by side in one image.
+fn strip(sprites: &[Argb]) -> Argb {
+    let (w, h) = (16 * sprites.len() as u32, 16);
+    let mut pixels = vec![0; (w * h) as usize];
+    for (i, s) in sprites.iter().enumerate() {
+        for y in 0..h.min(s.height) {
+            for x in 0..16.min(s.width) {
+                pixels[(y * w + i as u32 * 16 + x) as usize] = s.pixels[(y * s.width + x) as usize];
+            }
+        }
+    }
+    Argb { width: w, height: h, pixels }
+}
 
 fn load_jar() -> io::Result<(Arc<Models>, Arc<Colors>, Argb, Loaded)> {
     let jar = Jar::find()?;
@@ -246,9 +278,35 @@ fn load_jar() -> io::Result<(Arc<Models>, Arc<Colors>, Argb, Loaded)> {
         icons: png("textures/gui/icons.png")?,
         widgets: png("textures/gui/widgets.png")?,
         font: png("textures/font/ascii.png")?,
+        sign: png("textures/entity/sign.png")?,
+        tabs: png("textures/gui/container/creative_inventory/tabs.png")?,
+        backgrounds: [
+            png("textures/gui/container/creative_inventory/tab_items.png")?,
+            png("textures/gui/container/creative_inventory/tab_item_search.png")?,
+            png("textures/gui/container/creative_inventory/tab_inventory.png")?,
+        ],
+        empty_slots: {
+            let sprites = survival::gui::draw::EMPTY_SLOT_NAMES.iter().map(|n| png(&format!("textures/items/{n}.png"))).collect::<io::Result<Vec<_>>>()?;
+            strip(&sprites)
+        },
+        lang: jar.asset("lang/en_us.lang")?,
     };
     let clouds = png("textures/environment/clouds.png")?;
     Ok((Arc::new(Models::load(&jar)?), Arc::new(Colors::load(&jar)?), clouds, loaded))
+}
+
+/// The shared build's error handler: each failing system or command is logged the first time
+/// with its error, and skipped after that, so a broken system cannot fill latest.log each frame.
+#[cfg(feature = "share")]
+fn log_error_once(error: bevy::ecs::error::BevyError, ctx: bevy::ecs::error::ErrorContext) {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let line = format!("{ctx}: {error}");
+    let mut seen = SEEN.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if seen.insert(line.clone()) {
+        bevy::log::error!("{line}");
+    }
 }
 
 fn main() {
@@ -321,6 +379,10 @@ fn main() {
         ..default()
     };
     let mut app = App::new();
+    // A player's copy logs a failing system and goes on instead of closing the game; builds here
+    // keep Bevy's panic so the tests and the smoke run catch it.
+    #[cfg(feature = "share")]
+    app.set_error_handler(log_error_once);
     if let Some(st) = &args.stream {
         // No OS window: nothing can grab the host's mouse, and the cameras draw into an image.
         window.resolution = bevy::window::WindowResolution::new(st.video.width, st.video.height);
@@ -382,6 +444,7 @@ fn main() {
     .insert_resource(interact::Controller::default())
     .insert_resource(HideGui(args.hide_gui))
     .insert_resource(Menu { open: false, persist: !headless, open_at_start: args.menu })
+    .insert_resource(survival::gui::creative::Creative { open_at_start: args.screen, ..default() })
     .insert_resource(player)
     .insert_resource(Focus::default())
     .insert_resource(loaded)
@@ -430,7 +493,7 @@ fn main() {
         )
             .chain(),
     );
-    app.add_plugins(survival::SurvivalPlugin);
+    app.add_plugins((survival::SurvivalPlugin, sign::SignPlugin));
     if streaming {
         app.add_systems(Startup, link::setup_video.before(setup))
             .add_systems(PostStartup, link::retarget_cameras)
@@ -548,6 +611,13 @@ fn setup(
     ));
     commands.insert_resource(GuiIcons(images.add(flat_image(&loaded.icons, true))));
     commands.insert_resource(GuiWidgets(images.add(flat_image(&loaded.widgets, true))));
+    commands.insert_resource(sign::SignImages { world: images.add(flat_image(&loaded.sign, false)), gui: images.add(flat_image(&loaded.sign, true)) });
+    commands.insert_resource(survival::gui::ContainerImages {
+        tabs: images.add(flat_image(&loaded.tabs, true)),
+        backgrounds: loaded.backgrounds.each_ref().map(|b| images.add(flat_image(b, true))),
+        empty_slots: images.add(flat_image(&loaded.empty_slots, true)),
+    });
+    commands.insert_resource(survival::gui::GuiLang(sim::lang::Lang::from_bytes(&loaded.lang)));
     commands.remove_resource::<Loaded>();
 
     // The shaded mode's sun. Only the main camera shares its layer, so only it gets cascades.

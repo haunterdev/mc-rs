@@ -162,12 +162,15 @@ impl Wr {
 }
 
 /// An item stack on the wire: 1.12.2 numeric item id (-1 empty; under 256 means the `ItemBlock`
-/// of that block), count and meta (damage for tools). `sim` converts to `items::ItemStack`.
+/// of that block), count, meta (damage for tools) and the reduced tag compound `items::Tag` as
+/// three bytes: kind (0 none, 1 potion, 2 stored enchantment, 3 spawn egg entity) and two
+/// values. `sim` converts to `items::ItemStack`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WireStack {
     pub id: i16,
     pub count: u8,
     pub meta: u16,
+    pub tag: [u8; 3],
 }
 
 impl Default for WireStack {
@@ -177,8 +180,13 @@ impl Default for WireStack {
 }
 
 impl WireStack {
-    pub const SIZE: usize = 5;
-    pub const EMPTY: WireStack = WireStack { id: -1, count: 0, meta: 0 };
+    pub const SIZE: usize = 8;
+    pub const EMPTY: WireStack = WireStack { id: -1, count: 0, meta: 0, tag: [0; 3] };
+
+    /// An untagged stack.
+    pub const fn new(id: i16, count: u8, meta: u16) -> WireStack {
+        WireStack { id, count, meta, tag: [0; 3] }
+    }
 
     pub fn is_empty(&self) -> bool {
         self.id < 0 || self.count == 0
@@ -190,17 +198,18 @@ impl WireStack {
         b[..2].copy_from_slice(&s.id.to_le_bytes());
         b[2] = s.count;
         b[3..5].copy_from_slice(&s.meta.to_le_bytes());
+        b[5..8].copy_from_slice(&s.tag);
         b
     }
 
-    /// Exactly [`Self::SIZE`] bytes. Ids below -1 are refused; an empty stack decodes as
-    /// [`WireStack::EMPTY`].
+    /// Exactly [`Self::SIZE`] bytes. Ids below -1 and tag kinds above 3 are refused; an empty
+    /// stack decodes as [`WireStack::EMPTY`].
     pub fn decode(b: &[u8]) -> Option<WireStack> {
         if b.len() != Self::SIZE {
             return None;
         }
-        let s = WireStack { id: i16::from_le_bytes([b[0], b[1]]), count: b[2], meta: u16::from_le_bytes([b[3], b[4]]) };
-        (s.id >= -1).then(|| if s.is_empty() { WireStack::EMPTY } else { s })
+        let s = WireStack { id: i16::from_le_bytes([b[0], b[1]]), count: b[2], meta: u16::from_le_bytes([b[3], b[4]]), tag: [b[5], b[6], b[7]] };
+        (s.id >= -1 && s.tag[0] <= 3).then(|| if s.is_empty() { WireStack::EMPTY } else { s })
     }
 }
 
@@ -239,10 +248,13 @@ mod tests {
         for s in [DIAMOND_SWORD, COBBLE, WireStack::EMPTY] {
             assert_eq!(WireStack::decode(&s.encode()), Some(s));
         }
-        assert_eq!(WireStack::EMPTY.encode(), [0xFF, 0xFF, 0, 0, 0]);
+        assert_eq!(WireStack::EMPTY.encode(), [0xFF, 0xFF, 0, 0, 0, 0, 0, 0]);
         // Any empty stack goes out and comes back as EMPTY.
-        assert_eq!(WireStack::decode(&WireStack { id: 4, count: 0, meta: 3 }.encode()), Some(WireStack::EMPTY));
-        assert_eq!(WireStack::decode(&[0xFE, 0xFF, 1, 0, 0]), None);
+        assert_eq!(WireStack::decode(&WireStack::new(4, 0, 3).encode()), Some(WireStack::EMPTY));
+        assert_eq!(WireStack::decode(&[0xFE, 0xFF, 1, 0, 0, 0, 0, 0]), None);
+        let potion = WireStack { id: 373, count: 1, meta: 0, tag: [1, 5, 0] };
+        assert_eq!(WireStack::decode(&potion.encode()), Some(potion));
+        assert_eq!(WireStack::decode(&[0x75, 0x01, 1, 0, 0, 4, 0, 0]), None);
         assert_eq!(WireStack::decode(&COBBLE.encode()[..4]), None);
         assert_eq!(MobMeta::decode(&SHEEP.encode()), Some(SHEEP));
         let creeper = MobMeta { flags: MM_IGNITED | MM_POWERED, wool: 0, swell: -1 };

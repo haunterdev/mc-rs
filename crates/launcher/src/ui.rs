@@ -454,9 +454,13 @@ pub fn prepare(h: &Handle, download: bool) -> Option<(PathBuf, PathBuf)> {
 
 /// The game ended with an error: its exit code and the end of its log.
 pub fn exit_failure(s: ExitStatus, log: Vec<String>) -> Phase {
+    let crashed = log.iter().any(|l| l.contains("panicked at"));
+    let what = if crashed { "mc-rs crashed" } else { "mc-rs closed with an error" };
     let message = match s.code() {
-        Some(c) => format!("mc-rs closed with an error (exit code {c})."),
-        None => "mc-rs closed with an error.".into(),
+        // Windows status codes (0xC0000409 for an aborting panic) read as large negatives.
+        Some(c) if c < 0 => format!("{what} (exit code 0x{:08X}).", c as u32),
+        Some(c) => format!("{what} (exit code {c})."),
+        None => format!("{what}."),
     };
     Phase::Failed { message, log }
 }
@@ -488,6 +492,17 @@ fn progress(done: u64, total: Option<u64>) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn a_crash_reads_as_one() {
+        use std::os::windows::process::ExitStatusExt;
+        let log = vec!["thread 'main' panicked at src/main.rs:1:1:".to_owned()];
+        let Phase::Failed { message, .. } = exit_failure(ExitStatus::from_raw(0xC000_0409), log) else { panic!() };
+        assert_eq!(message, "mc-rs crashed (exit code 0xC0000409).");
+        let Phase::Failed { message, .. } = exit_failure(ExitStatus::from_raw(3), Vec::new()) else { panic!() };
+        assert_eq!(message, "mc-rs closed with an error (exit code 3).");
+    }
 
     /// Lays every phase out on both tabs in a window-sized context and checks the content stays
     /// above the footer, the longest case being an error with a full log tail on the Join tab.

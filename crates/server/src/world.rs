@@ -362,6 +362,11 @@ impl World {
         });
     }
 
+    /// The data folder the world is saved in.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// Writes the players and the world file; called every few seconds and at shutdown.
     pub fn save(&mut self) {
         if self.players_dirty {
@@ -383,7 +388,7 @@ impl World {
     }
 }
 
-fn write_atomic(path: &Path, text: &str) {
+pub(crate) fn write_atomic(path: &Path, text: &str) {
     let tmp = path.with_extension("tmp");
     if std::fs::write(&tmp, text).is_ok() {
         let _ = std::fs::rename(&tmp, path);

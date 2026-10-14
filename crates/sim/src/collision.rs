@@ -204,6 +204,8 @@ pub fn collision_box(state: u16) -> Option<Aabb> {
         // BlockLilyPad has none (NULL_AABB); addCollisionBoxToList adds its own box instead.
         id::WATERLILY => None,
         id::CACTUS => Some(CACTUS),
+        // BlockSign.getCollisionBoundingBox is NULL_AABB.
+        id::STANDING_SIGN | id::WALL_SIGN => None,
         // BlockSlab.AABB_BOTTOM_HALF and AABB_TOP_HALF by HALF (meta & 8).
         id::STONE_SLAB | id::WOODEN_SLAB | id::STONE_SLAB2 | id::PURPUR_SLAB => {
             Some(if state & 8 == 0 { Aabb { max_y: 0.5, ..FULL } } else { Aabb { min_y: 0.5, ..FULL } })

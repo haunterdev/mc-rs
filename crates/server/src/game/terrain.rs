@@ -235,6 +235,7 @@ pub fn set_block(game: &mut Game, at: (i32, i32, i32), state: u16) -> Vec<BlockC
     for p in gone {
         net::broadcast(game, None, proto::S_PAINTING, &p.encode());
     }
+    super::tiles::on_changes(game, None, &changes);
     changes
 }
 

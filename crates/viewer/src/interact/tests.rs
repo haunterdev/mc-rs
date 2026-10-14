@@ -220,3 +220,30 @@ fn a_picked_block_not_in_the_hotbar_takes_the_current_or_the_best_slot() {
     assert_eq!(r.inv.main[5], block_stack(id::CLAY, 0));
     assert_eq!(r.inv.main[9], planks);
 }
+
+#[test]
+fn a_sign_stands_on_top_hangs_on_a_side_and_opens_its_screen() {
+    let mut r = Rig::new();
+    let c = r.inv.current_item;
+    r.inv.main[c] = ItemStack::of(items::ids::item::SIGN);
+    // On top: a standing sign turned to face the player (yaw 0 looks south, so rotation 8).
+    r.use_on((2, 63, 0), Facing::Up, (2.5, 64.0, 0.5));
+    assert_eq!(r.at(2, 64, 0), state(id::STANDING_SIGN, 8));
+    assert_eq!(r.ctl.sign, Some((2, 64, 0)));
+    // On a side: a wall sign facing out of that side.
+    r.w.set(4, 64, 0, STONE);
+    r.use_on((4, 64, 0), Facing::North, (4.5, 64.5, 0.0));
+    assert_eq!(r.at(4, 64, 0 - 1), state(id::WALL_SIGN, 2));
+    // Never on the bottom of a block, and not beside a cactus.
+    r.ctl.sign = None;
+    r.use_on((4, 64, 0), Facing::Down, (4.5, 64.0, 0.5));
+    assert_eq!(r.at(4, 63, 0), STONE);
+    r.w.set(7, 64, 1, state(id::CACTUS, 0));
+    r.use_on((7, 63, 0), Facing::Up, (7.5, 64.0, 0.5));
+    assert_eq!((r.at(7, 64, 0), r.ctl.sign), (0, None));
+    // The middle click picks the sign item.
+    r.inv.main[c] = ItemStack::EMPTY;
+    r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(2.5, 64.5, 0.5), face: Facing::Up, pos: (2, 64, 0) });
+    middle_click_mouse(&r.w, &r.ctl, &mut r.inv);
+    assert_eq!(r.inv.get_current_item().item, items::ids::item::SIGN);
+}

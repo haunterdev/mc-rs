@@ -90,9 +90,9 @@ pub fn checked_edits(body: &[u8], at: Option<[f64; 3]>, game_mode: u8) -> Vec<Bl
     changes
 }
 
-/// A survival frame (tags 60..99) the game checks itself; every one is short.
+/// A survival frame (tags 60..99) the game checks itself; every one is short but a sign's lines.
 pub fn passes_survival(tag: u8, body: &[u8]) -> bool {
-    (60..100).contains(&tag) && body.len() < 64
+    (60..100).contains(&tag) && (body.len() < 64 || (tag == proto::V_SIGN && body.len() <= proto::SignText::MAX_SIZE))
 }
 
 /// A state the world can keep: no NaN or infinite position or angle.
@@ -255,6 +255,8 @@ mod tests {
         assert!(!passes_survival(59, &[]));
         assert!(!passes_survival(100, &[]));
         assert!(!passes_survival(proto::V_TEXT, b"hi"));
+        assert!(passes_survival(proto::V_SIGN, &[0; proto::SignText::MAX_SIZE]));
+        assert!(!passes_survival(proto::V_SIGN, &[0; proto::SignText::MAX_SIZE + 1]));
     }
 
     #[test]

@@ -2,8 +2,9 @@
 //! `currentItem`, `getSlotFor`, `pickItem`, `setPickedItemStack`), the wheel and number keys
 //! that change the selected slot, and `GuiIngame.renderHotbar`'s bar and selection frame.
 //!
-//! The creative inventory screen is not ported; the hotbar starts filled with building blocks and
-//! the middle click (`interact.rs`) puts any block in the world into it.
+//! The hotbar starts filled with building blocks; in creative mode E opens the creative inventory
+//! (`survival/gui/creative.rs`), and the middle click (`interact.rs`) puts any block in the world
+//! into it.
 
 use std::ops::{Deref, DerefMut};
 

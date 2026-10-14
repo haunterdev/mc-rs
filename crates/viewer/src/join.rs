@@ -382,7 +382,7 @@ mod tests {
                     if let Message::Binary(b) = ws.read().unwrap() {
                         for (tag, body) in proto::split_frames(&b).unwrap() {
                             if tag == proto::V_CLIENT_INFO {
-                                assert_eq!(proto::ClientInfo::decode(body), Some(proto::ClientInfo { version: 1 }));
+                                assert_eq!(proto::ClientInfo::decode(body), Some(proto::ClientInfo { version: proto::SURVIVAL_PROTOCOL }));
                             }
                             tags.push(tag);
                         }

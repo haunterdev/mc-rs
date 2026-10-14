@@ -67,6 +67,8 @@ pub struct Hub {
     pub ips: Mutex<HashMap<String, String>>,
     /// The game thread's inbox (game/mod.rs), set once it starts.
     game: std::sync::OnceLock<std::sync::mpsc::Sender<GameMsg>>,
+    /// The backup thread's inbox (backup.rs), set once it starts.
+    backups: std::sync::OnceLock<std::sync::mpsc::Sender<crate::backup::Request>>,
 }
 
 /// One session online, as commands.rs sees it.
@@ -146,6 +148,7 @@ impl Hub {
             bans,
             ips: Mutex::new(HashMap::new()),
             game: std::sync::OnceLock::new(),
+            backups: std::sync::OnceLock::new(),
         });
         Ok((hub, listener))
     }
@@ -159,6 +162,27 @@ impl Hub {
         if let Some(tx) = self.game.get() {
             let _ = tx.send(m);
         }
+    }
+
+    /// Has the game thread write its module files now and waits up to `timeout` for it; true
+    /// when it answered, or when there is no game thread.
+    pub fn save_game(&self, timeout: std::time::Duration) -> bool {
+        let Some(tx) = self.game.get() else { return true };
+        let (done, wait) = std::sync::mpsc::channel();
+        if tx.send(GameMsg::Save { done }).is_err() {
+            return false;
+        }
+        wait.recv_timeout(timeout).is_ok()
+    }
+
+    /// Connects the backup thread (backup.rs).
+    pub fn set_backups(&self, tx: std::sync::mpsc::Sender<crate::backup::Request>) {
+        let _ = self.backups.set(tx);
+    }
+
+    /// Asks the backup thread for a backup; false when there is none.
+    pub fn request_backup(&self, from: Option<u32>) -> bool {
+        self.backups.get().is_some_and(|tx| tx.send(crate::backup::Request { from }).is_ok())
     }
 
     /// Accepts viewer connections and hands each to the browser session that started it.

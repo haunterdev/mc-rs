@@ -6,7 +6,8 @@
 //! Behaviour lives in the hook modules, each filled by one task of section 5. Every module has the
 //! same six hooks (`on_join`, `on_leave`, `on_frame`, `tick`, `save`, `load`), listed once in
 //! [`MODULES`]; the tick runs [`TICK_ORDER`]. A few messages go to one module's own hook:
-//! `State` to `players::on_state`, `Blocks` to `terrain::on_blocks` then `mining::on_blocks`,
+//! `State` to `players::on_state`, `Blocks` to `terrain::on_blocks`, `mining::on_blocks` and
+//! `tiles::on_changes`,
 //! `GameMode` to `players::on_game_mode`, `Kill` to `damage::on_kill`, and the start and
 //! `Shutdown` to `persist`. A module keeps its data in its own `State`, a field of [`Game`].
 //!
@@ -33,6 +34,8 @@ pub mod windows;
 pub mod testing;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tiles_tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -67,6 +70,8 @@ pub enum GameMsg {
     Blocks { id: u32, changes: Vec<BlockChange> },
     GameMode { id: u32, mode: u8 },
     Kill { id: u32 },
+    /// Write every module's file now and answer on `done` (a backup is about to copy them).
+    Save { done: std::sync::mpsc::Sender<()> },
     Shutdown,
 }
 
@@ -357,6 +362,7 @@ impl Game {
                 }
                 terrain::on_blocks(self, id, &changes);
                 mining::on_blocks(self, id, &changes);
+                tiles::on_changes(self, Some(id), &changes);
             }
             GameMsg::GameMode { id, mode } => {
                 let Some(s) = self.sessions.get_mut(&id) else { return };
@@ -367,6 +373,10 @@ impl Game {
                 if self.sessions.contains_key(&id) {
                     damage::on_kill(self, id);
                 }
+            }
+            GameMsg::Save { done } => {
+                persist::save_all(self);
+                let _ = done.send(());
             }
             GameMsg::Shutdown => self.shutdown(),
         }

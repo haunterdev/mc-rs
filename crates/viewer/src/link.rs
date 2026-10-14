@@ -13,13 +13,13 @@
 //! A native session (`--join`, join.rs) runs `receive` and `send` too, over a WebSocket to the
 //! server, in its own window and with no video; the server sends it no browser input.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, BufReader, BufWriter, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bevy::camera::{ImageRenderTarget, RenderTarget};
 use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
@@ -67,6 +67,8 @@ pub struct Welcome {
 pub struct Link {
     out: Sender<Vec<u8>>,
     inbox: Receiver<(u8, Vec<u8>)>,
+    /// Frames taken off `inbox` while [`pace`] watched for browser input, for `receive`.
+    held: VecDeque<(u8, Vec<u8>)>,
     closed: Arc<AtomicBool>,
     pub welcome: Welcome,
     last_state: Option<PlayerState>,
@@ -81,6 +83,11 @@ pub struct Link {
 }
 
 impl Link {
+    /// Whether the browser holds a shift key, for the text a key types.
+    pub fn shift_held(&self) -> bool {
+        self.keys_down.contains(&KeyCode::ShiftLeft) || self.keys_down.contains(&KeyCode::ShiftRight)
+    }
+
     /// Connects, says hello and waits for the server's welcome.
     pub fn connect(args: &StreamArgs) -> io::Result<Link> {
         let stream = TcpStream::connect(&args.addr)?;
@@ -133,6 +140,7 @@ impl Link {
         Link {
             out,
             inbox,
+            held: VecDeque::new(),
             closed,
             welcome,
             last_state: None,
@@ -146,6 +154,19 @@ impl Link {
 
     pub fn send(&self, tag: u8, body: &[u8]) {
         let _ = self.out.send(proto::frame(tag, body));
+    }
+
+    /// The next frame from the server: the held ones first, in the order they came.
+    fn next_frame(&mut self) -> Option<(u8, Vec<u8>)> {
+        self.held.pop_front().or_else(|| self.inbox.try_recv().ok())
+    }
+
+    /// Holds what has arrived; true once browser input is among the held frames.
+    fn input_waiting(&mut self) -> bool {
+        while let Ok(f) = self.inbox.try_recv() {
+            self.held.push_back(f);
+        }
+        self.held.iter().any(|f| f.0 == proto::S_INPUT)
     }
 
     pub fn sender(&self) -> Sender<Vec<u8>> {
@@ -266,7 +287,7 @@ pub fn receive(
         repeat: false,
         window,
     };
-    while let Ok((tag, body)) = link.inbox.try_recv() {
+    while let Some((tag, body)) = link.next_frame() {
         match tag {
             proto::S_INPUT => {
                 for e in proto::decode_inputs(&body) {
@@ -459,25 +480,49 @@ pub struct NewPicture(pub Option<[u32; 4]>);
 /// The time between frame starts, as `ScheduleRunnerPlugin` keeps it, but changeable.
 #[derive(Resource)]
 pub struct Pace {
-    pub frame: std::time::Duration,
-    last: std::time::Instant,
+    pub frame: Duration,
+    /// When the next frame is due on the steady grid of frame starts.
+    due: Instant,
 }
 
 impl Pace {
     pub fn new(fps: u32) -> Pace {
-        Pace { frame: std::time::Duration::from_secs_f64(1.0 / fps.max(1) as f64), last: std::time::Instant::now() }
+        Pace { frame: Duration::from_secs_f64(1.0 / fps.max(1) as f64), due: Instant::now() }
+    }
+
+    /// How early a frame may start for browser input: half a frame.
+    fn early(&self) -> Duration {
+        self.frame / 2
+    }
+
+    /// Where the frame after one starting at `now` is due: a frame on the grid, or a whole frame
+    /// on from now after falling behind by more than a frame (no burst of frames to catch up).
+    fn advance(&mut self, now: Instant) {
+        if now > self.due + self.frame {
+            self.due = now;
+        }
+        self.due += self.frame;
     }
 }
 
+/// How often the wait in [`pace`] looks for browser input. A timed channel wait on Windows parks
+/// until the next 15.6 ms timer tick; std's sleep uses a high-resolution timer.
+const INPUT_POLL: Duration = Duration::from_micros(250);
+
 /// Waits out the rest of the frame before the next one reads input, as the runner's own wait
-/// does after a frame.
-pub fn pace(mut pace: ResMut<Pace>) {
-    let due = pace.last + pace.frame;
-    let now = std::time::Instant::now();
-    if now < due {
-        thread::sleep(due - now);
+/// does after a frame, but starts the frame up to half a frame early when browser input comes
+/// in: input otherwise waits half a frame on average for the next update to read it. Frames
+/// stay on the grid of the stream's frame rate, so starting early never adds frames.
+pub fn pace(mut pace: ResMut<Pace>, mut link: ResMut<Link>) {
+    let open = pace.due.checked_sub(pace.early()).unwrap_or(pace.due);
+    let now = Instant::now();
+    if now < open {
+        thread::sleep(open - now);
     }
-    pace.last = std::time::Instant::now();
+    while Instant::now() < pace.due && !link.input_waiting() && !link.closed.load(Ordering::Relaxed) {
+        thread::sleep(INPUT_POLL.min(pace.due.saturating_duration_since(Instant::now())));
+    }
+    pace.advance(Instant::now());
 }
 
 /// Streams the tuner's picture from the next frame on: the target image and the window take the

@@ -243,7 +243,7 @@ pub struct CreativeSlot {
 }
 
 impl CreativeSlot {
-    pub const SIZE: usize = 7;
+    pub const SIZE: usize = 2 + WireStack::SIZE;
 
     pub fn encode(&self) -> Vec<u8> {
         Wr::new().i16(self.slot).stack(self.stack).done()
@@ -253,6 +253,40 @@ impl CreativeSlot {
         let mut r = Rd(b);
         let m = CreativeSlot { slot: r.i16()?, stack: r.stack()? };
         r.end(m)
+    }
+}
+
+/// The most characters a sign line may hold on the wire (`CPacketUpdateSign` reads each line with
+/// `readString(384)`).
+pub const SIGN_LINE_MAX: usize = 384;
+
+/// [`V_SIGN`] and [`S_SIGN`]: a sign's position and its four lines (`CPacketUpdateSign`, and the
+/// `Text1` to `Text4` of the sign's update packet).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignText {
+    pub pos: [i32; 3],
+    pub lines: [String; 4],
+}
+
+impl SignText {
+    /// The longest body: the position and four lines of [`SIGN_LINE_MAX`] characters of up to
+    /// four UTF-8 bytes each.
+    pub const MAX_SIZE: usize = 12 + 4 * (2 + SIGN_LINE_MAX * 4);
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Wr::new().i32x3(self.pos);
+        for l in &self.lines {
+            w = w.str(l);
+        }
+        w.done()
+    }
+
+    pub fn decode(b: &[u8]) -> Option<SignText> {
+        let mut r = Rd(b);
+        let pos = r.i32x3()?;
+        let mut line = || r.str().filter(|s| s.chars().count() <= SIGN_LINE_MAX);
+        let lines = [line()?, line()?, line()?, line()?];
+        r.end(SignText { pos, lines })
     }
 }
 
@@ -280,5 +314,8 @@ mod tests {
         trip(&CloseWindow { window: 100 }, CloseWindow::encode, CloseWindow::decode, Some(CloseWindow::SIZE));
         trip(&CreativeSlot { slot: 36, stack: COBBLE }, CreativeSlot::encode, CreativeSlot::decode, Some(CreativeSlot::SIZE));
         trip(&CreativeSlot { slot: -1, stack: WireStack::EMPTY }, CreativeSlot::encode, CreativeSlot::decode, Some(CreativeSlot::SIZE));
+        let sign = SignText { pos: [-4, 70, 12], lines: ["Hello".into(), String::new(), "\u{e9}t\u{e9}".into(), "x".repeat(SIGN_LINE_MAX)] };
+        trip(&sign, SignText::encode, SignText::decode, None);
+        assert!(sign.encode().len() <= SignText::MAX_SIZE);
     }
 }

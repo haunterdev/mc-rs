@@ -9,7 +9,8 @@ use crate::food::FishType;
 use crate::ids::item;
 use crate::items_table::WOOD;
 use crate::registry::{Kind, Names};
-use crate::stack::ItemStack;
+use crate::creative;
+use crate::stack::{ItemStack, Tag};
 
 /// `EnumDyeColor.getTranslationKey()`, by metadata.
 pub const DYE_KEYS: [&str; 16] = [
@@ -91,27 +92,38 @@ pub fn translation_key(stack: &ItemStack) -> String {
 /// The lang key `Item.getItemStackDisplayName(stack)` reads: [`translation_key`] + `".name"`,
 /// except where a class builds it another way:
 /// `ItemBanner` (`item.banner.<color>.name` by `byDyeDamage(meta & 15)`), and the potion items,
-/// whose untagged stacks read the `empty` potion type (`potion.effect.empty` and the splash,
-/// lingering and tipped arrow forms). DROPPED with NBT: potion types, spawn egg mob names,
-/// player head owners, written book titles and shield banner colors; those stacks name as
-/// their untagged forms.
+/// which read their tag's potion type (`PotionUtils.getPotionFromItem(stack).getNamePrefixed`
+/// after `potion.effect.` and the splash, lingering and tipped arrow forms; `empty` untagged).
+/// DROPPED with NBT: player head owners, written book titles and shield banner colors; those
+/// stacks name as their untagged forms.
 pub fn name_key(stack: &ItemStack) -> String {
     let it = stack.get_item();
+    let potion = || match stack.tag {
+        Tag::Potion(p) => creative::potion(p).base,
+        _ => "empty",
+    };
     match it {
         item::BANNER => format!("item.banner.{}.name", DYE_KEYS[dye_by_dye_damage(stack.get_metadata() & 15)]),
-        item::POTIONITEM => "potion.effect.empty".into(),
-        item::SPLASH_POTION => "splash_potion.effect.empty".into(),
-        item::LINGERING_POTION => "lingering_potion.effect.empty".into(),
-        item::TIPPED_ARROW => "tipped_arrow.effect.empty".into(),
+        item::POTIONITEM => format!("potion.effect.{}", potion()),
+        item::SPLASH_POTION => format!("splash_potion.effect.{}", potion()),
+        item::LINGERING_POTION => format!("lingering_potion.effect.{}", potion()),
+        item::TIPPED_ARROW => format!("tipped_arrow.effect.{}", potion()),
         _ => format!("{}.name", translation_key(stack)),
     }
 }
 
 /// The name a `.lang` table gives a stack (`I18n.translateToLocal(...).trim()`), or the key
-/// itself when the table lacks it, as `I18n` does.
+/// itself when the table lacks it, as `I18n` does. `ItemMonsterPlacer.getItemStackDisplayName`
+/// appends the egg's `entity.<name>.name`.
 pub fn display_name(stack: &ItemStack, lang: &HashMap<String, String>) -> String {
-    let key = name_key(stack);
-    lang.get(&key).map(|s| s.trim().to_string()).unwrap_or(key)
+    let tr = |key: String| lang.get(&key).map(|s| s.trim().to_string()).unwrap_or(key);
+    let mut s = tr(name_key(stack));
+    if let (item::SPAWN_EGG, Tag::Entity(e)) = (stack.get_item(), stack.tag) {
+        if let Some(egg) = creative::egg(e) {
+            s = format!("{s} {}", tr(format!("entity.{}.name", egg.translation)));
+        }
+    }
+    s
 }
 
 /// `LanguageMap.inject`: `key=value` lines of a `.lang` file (comments start with `#`; the

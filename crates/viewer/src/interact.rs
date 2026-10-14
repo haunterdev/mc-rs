@@ -11,6 +11,7 @@ use bevy::prelude::*;
 use items::{ItemStack, Kind as ItemKind};
 use worldgen::blocks::{id, state, WATERLILY};
 use worldgen::populate::behavior::{can_sustain_bush, torch_can_place_at, torch_meta, vine_bit, vine_except, TORCH_FACINGS};
+use worldgen::populate::props::material;
 use worldgen::populate::state as st;
 use worldgen::populate::Facing;
 
@@ -45,6 +46,8 @@ pub struct Controller {
     pub block_hit_delay: i32,
     pub uses: u32,
     pub picks: u32,
+    /// The sign just placed, for the edit screen (`EntityPlayer.openEditSign`, sign.rs).
+    pub sign: Option<BlockPos>,
 }
 
 /// `EnumActionResult`
@@ -146,6 +149,10 @@ fn can_place_block_at(w: &impl BlockAccess, p: BlockPos, block: u16) -> bool {
                 && !st::mat_liquid(get(w, up(p)))
         }
         id::PUMPKIN => st::mat_replaceable(get(w, p)) && st::is_top_solid(below),
+        // BlockSign: no cactus beside it (BlockContainer.hasInvalidNeighbor), and Block's rule.
+        id::STANDING_SIGN | id::WALL_SIGN => {
+            !Facing::HORIZONTAL.iter().any(|&f| st::mat(get(w, offset(p, f))) == material::CACTUS) && is_replaceable(w, p)
+        }
         // BlockTorch.canPlaceBlockAt
         id::TORCH => TORCH_FACINGS.iter().any(|&f| torch_can_place_at(get(w, offset(p, f.opposite())), f)),
         id::SNOW_LAYER => {
@@ -333,10 +340,35 @@ fn on_item_use(w: &mut impl World, player: &Player, stack: ItemStack, p: BlockPo
     }
 }
 
+/// `ItemSign.onItemUse`: a standing sign facing the player on top of a block, a wall sign on its
+/// side, and its edit screen (`openEditSign`), which sign.rs opens from `opened`.
+/// DROPPED: `canPlayerEdit`, true for a creative player; `ItemBlock.setTileEntityNBT`, as no
+/// stack carries tile data; the placed-block trigger; and `shrink`, as creative keeps the stack.
+fn item_sign_use(w: &mut impl World, player: &Player, p: BlockPos, facing: Facing, opened: &mut Option<BlockPos>) -> Action {
+    let s = get(w, p);
+    let flag = is_replaceable(w, p);
+    if facing != Facing::Down && (st::mat_solid(s) || flag) && (!flag || facing == Facing::Up) {
+        let q = offset(p, facing);
+        if can_place_block_at(w, q, id::STANDING_SIGN) {
+            let q = if flag { down(q) } else { q };
+            let s = if facing == Facing::Up {
+                let i = floor(((player.yaw + 180.0) * 16.0 / 360.0) as f64 + 0.5) & 15;
+                state(id::STANDING_SIGN, i as u16)
+            } else {
+                state(id::WALL_SIGN, facing as u16)
+            };
+            w.edit(vec![edit(q, s, 11, true)]);
+            *opened = Some(q);
+            return Action::Success;
+        }
+    }
+    Action::Fail
+}
+
 /// `PlayerControllerMP.processRightClickBlock` in creative.
 /// DROPPED: every `onBlockActivated` but the chest's, which on the client only answers true (its
 /// screen is not ported).
-fn process_right_click_block(w: &mut impl World, player: &Player, held: ItemStack, hit: Hit) -> Action {
+fn process_right_click_block(w: &mut impl World, player: &Player, held: ItemStack, hit: Hit, opened: &mut Option<BlockPos>) -> Action {
     let p = hit.pos;
     let hit_y = (hit.vec.y - p.1 as f64) as f32;
     let activated = (!player.is_sneaking() || held.is_empty()) && get(w, p) >> 4 == id::CHEST;
@@ -354,8 +386,8 @@ fn process_right_click_block(w: &mut impl World, player: &Player, held: ItemStac
     }
     match placed_block(&held) {
         Some(_) => on_item_use(w, player, held, p, hit.face, hit_y),
-        // DROPPED: Item.onItemUse of the items that place no block; no such stack reaches the
-        // creative hotbar yet.
+        None if held.item == items::ids::item::SIGN => item_sign_use(w, player, p, hit.face, opened),
+        // DROPPED: Item.onItemUse of the other items that place no block.
         None => Action::Pass,
     }
 }
@@ -396,7 +428,7 @@ fn right_click_mouse(w: &mut impl World, ctl: &mut Controller, hand: &mut Hand, 
     ctl.right_click_delay = 4;
     let held = inv.get_current_item();
     if let Some(h) = ctl.over.filter(|h| h.kind == Kind::Block) {
-        if !air(get(w, h.pos)) && process_right_click_block(w, player, held, h) == Action::Success {
+        if !air(get(w, h.pos)) && process_right_click_block(w, player, held, h, &mut ctl.sign) == Action::Success {
             hand.swing_arm();
             // ItemRenderer.resetEquippedProgress: always in creative.
             if !held.is_empty() {
@@ -483,14 +515,15 @@ fn send_click_block_to_controller(w: &mut impl World, ctl: &mut Controller, hand
 }
 
 /// `Block.getItem`: the stack the middle click picks, as a block and metadata.
-/// DROPPED: the item-only results (cocoa beans, doors, signs) and the stored tile entity data.
+/// DROPPED: the item-only results (cocoa beans, doors) and the stored tile entity data. The sign's
+/// item is `middle_click_mouse`'s.
 fn pick(w: &impl BlockAccess, s: u16, p: BlockPos) -> Option<(u16, u16)> {
     let (b, m) = (s >> 4, s & 15);
     Some(match b {
         id::AIR | id::FLOWING_WATER | id::WATER | id::FLOWING_LAVA | id::LAVA | id::FIRE | id::MOB_SPAWNER | id::PORTAL | id::FROSTED_ICE => {
             return None
         }
-        id::COCOA | id::WOODEN_DOOR | id::IRON_DOOR | id::SPRUCE_DOOR | id::DARK_OAK_DOOR | id::STANDING_SIGN | id::PISTON_HEAD => return None,
+        id::COCOA | id::WOODEN_DOOR | id::IRON_DOOR | id::SPRUCE_DOOR | id::DARK_OAK_DOOR | id::STANDING_SIGN | id::WALL_SIGN | id::PISTON_HEAD => return None,
         // damageDropped: the variant.
         id::STONE
         | id::DIRT
@@ -542,8 +575,13 @@ fn middle_click_mouse(w: &impl BlockAccess, ctl: &Controller, inv: &mut Inventor
     if air(s) {
         return;
     }
-    let Some((b, m)) = pick(w, s, h.pos) else { return };
-    let stack = block_stack(b, m);
+    // BlockSign.getItem: the sign item.
+    let stack = if matches!(s >> 4, id::STANDING_SIGN | id::WALL_SIGN) {
+        ItemStack::of(items::ids::item::SIGN)
+    } else {
+        let Some((b, m)) = pick(w, s, h.pos) else { return };
+        block_stack(b, m)
+    };
     if stack.is_empty() {
         return;
     }

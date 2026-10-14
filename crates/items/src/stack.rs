@@ -1,13 +1,28 @@
 //! `ItemStack`: an item id, a count and a damage (metadata), with the comparisons crafting,
 //! furnaces and inventories use.
 //!
-//! DROPPED: the NBT tag compound (`stackTagCompound`): enchantments, custom names, potion types,
-//! banner patterns and the `Unbreakable` flag. Every tag comparison here treats both stacks as
-//! untagged, which is what vanilla does for stacks that never carried a tag. Also dropped:
-//! `animationsToGo` (a client bob after pickup) and the item frame link.
+//! The NBT tag compound (`stackTagCompound`) is reduced to [`Tag`]: the one entry each creative
+//! sub-item carries (a potion type, a stored enchantment, a spawn egg's entity). Tag comparisons
+//! compare that. DROPPED: the rest of NBT (applied enchantments, custom names, banner patterns,
+//! the `Unbreakable` flag), `animationsToGo` (a client bob after pickup) and the item frame link.
 
 use crate::registry::{self, ItemDef};
 use crate::{ids::item, tools};
+
+/// The part of `stackTagCompound` this port keeps: one entry, the one the stack's creative
+/// sub-item sets. `None` is a stack without a tag compound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum Tag {
+    #[default]
+    None,
+    /// `Potion`: a `PotionType` registry id (`PotionUtils.addPotionToItemStack`).
+    Potion(u8),
+    /// `StoredEnchantments` with one entry (`ItemEnchantedBook.getEnchantedItemStack`).
+    StoredEnchant { id: u8, level: u8 },
+    /// `EntityTag.id` (`ItemMonsterPlacer.applyEntityIdToItemStack`), as an index into
+    /// `creative_table::EGGS`.
+    Entity(u8),
+}
 
 /// `net.minecraft.item.ItemStack`. A plain value: Java mutates stacks in place, Rust callers pass
 /// `&mut` where the Java method mutates.
@@ -19,15 +34,28 @@ pub struct ItemStack {
     pub count: i32,
     /// `itemDamage`: durability used for damageable items, the subtype for the rest.
     pub damage: i32,
+    /// `stackTagCompound`, reduced (see [`Tag`]).
+    pub tag: Tag,
 }
 
 impl ItemStack {
     /// `ItemStack.EMPTY`
-    pub const EMPTY: ItemStack = ItemStack { item: item::AIR, count: 0, damage: 0 };
+    pub const EMPTY: ItemStack = ItemStack { item: item::AIR, count: 0, damage: 0, tag: Tag::None };
 
     /// `new ItemStack(item, amount, meta)`: a negative meta becomes 0.
     pub fn new(item: u16, count: i32, meta: i32) -> ItemStack {
-        ItemStack { item, count, damage: meta.max(0) }
+        ItemStack { item, count, damage: meta.max(0), tag: Tag::None }
+    }
+
+    /// This stack with `tag` as its tag compound (`setTagCompound`).
+    pub fn with_tag(mut self, tag: Tag) -> ItemStack {
+        self.tag = tag;
+        self
+    }
+
+    /// `hasTagCompound()`
+    pub fn has_tag_compound(&self) -> bool {
+        self.tag != Tag::None
     }
 
     /// `new ItemStack(item)`: one, meta 0.
@@ -86,9 +114,9 @@ impl ItemStack {
         self.grow(-quantity);
     }
 
-    /// `copy()`
+    /// `copy()`: the tag compound is copied too.
     pub fn copy(&self) -> ItemStack {
-        ItemStack::new(self.item, self.count, self.damage)
+        ItemStack::new(self.item, self.count, self.damage).with_tag(self.tag)
     }
 
     /// `splitStack(amount)`: takes up to `amount` off this stack and returns them.
@@ -192,9 +220,9 @@ impl ItemStack {
         }
     }
 
-    /// `isItemStackEqual(other)`: count, item and damage (tags are DROPPED).
+    /// `isItemStackEqual(other)`: count, item, damage and tag.
     fn is_item_stack_equal(&self, other: &ItemStack) -> bool {
-        self.count == other.count && self.get_item() == other.get_item() && self.damage == other.damage
+        self.count == other.count && self.get_item() == other.get_item() && self.damage == other.damage && self.tag == other.tag
     }
 }
 
@@ -215,13 +243,15 @@ pub fn are_items_equal_ignore_durability(a: &ItemStack, b: &ItemStack) -> bool {
     !a.is_empty() && !b.is_empty() && a.is_item_equal_ignore_durability(b)
 }
 
-/// `ItemStack.areItemStackTagsEqual(a, b)`: both empty, or both non-empty (no stack carries a
-/// tag here).
+/// `ItemStack.areItemStackTagsEqual(a, b)`: both empty, or both non-empty with equal tags.
 pub fn are_item_stack_tags_equal(a: &ItemStack, b: &ItemStack) -> bool {
-    a.is_empty() == b.is_empty()
+    if a.is_empty() && b.is_empty() {
+        return true;
+    }
+    !a.is_empty() && !b.is_empty() && a.tag == b.tag
 }
 
-/// `ItemStack.areItemStacksEqual(a, b)`: item, damage and count.
+/// `ItemStack.areItemStacksEqual(a, b)`: item, damage, count and tag.
 pub fn are_item_stacks_equal(a: &ItemStack, b: &ItemStack) -> bool {
     if a.is_empty() && b.is_empty() {
         return true;

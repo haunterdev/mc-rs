@@ -83,8 +83,9 @@ Then double-click `Start Server.bat`. The window prints a link to send to friend
 python tools/dist.py
 ```
 
-This writes `dist\mc-rs-launcher.exe`, one file that installs and starts the game on another PC. It
-builds with whole-program optimization, which takes 10 to 40 minutes.
+This writes `dist\mc-rs-launcher.exe`, one file that installs and starts the game on another PC.
+The first run compiles every dependency in the `dist-viewer` profile (about 10 minutes here); after
+a change to the game it takes about 4 minutes.
 
 ## Build speed
 
@@ -99,7 +100,19 @@ toolchain carries (`.cargo/config.toml`). Measured on a one-line viewer change w
 | rust-lld, incremental (now) | 13 to 16 s |
 
 The first build after a change to either setting rebuilds every dependency once (11 minutes
-here). The `dist` profile stays non-incremental, since it optimizes the whole program at once.
+here).
+
+`tools/dist.py` builds the viewer in profile `dist-viewer`: thin LTO over 16 codegen units,
+size-optimized, stripped. Fat LTO with one codegen unit took 30 to 40 minutes on every viewer
+change. Measured with `python tools/dist.py` (memory guard on):
+
+| Step | Cold (every dependency) | After a viewer change |
+|---|---|---|
+| viewer | 522 s | 189 s |
+| launcher | 77 s | 44 s |
+| whole run | 613 s | 246 s |
+
+The viewer is 45.0 MB (10.1 MB packed) and the launcher 16.9 MB, under its 20 MB limit.
 
 ## Run the tests
 

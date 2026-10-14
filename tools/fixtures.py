@@ -3,6 +3,7 @@
     python tools/fixtures.py build                compile harness/ against ../mc-1.12.2-src/server-mcp.jar
     python tools/fixtures.py gen [--seeds S ...]  misc dump, one JVM per seed, then fixtures/manifest.json
     python tools/fixtures.py pop [--seeds S ...]  only the props dump and population squares, then the manifest
+    python tools/fixtures.py creative             creative tabs, potions, enchantments, eggs (fixtures/creative.json)
     python tools/fixtures.py bench [--side N]     Java single-thread chunks/sec (prints one JSON line)
 
 When MCRS_RAMGUARD names a ramguard.py (a memory guard: Job Object, heap cap, working set
@@ -112,7 +113,7 @@ def gen(seeds: list[int], stages: bool = True) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("action", choices=["build", "gen", "pop", "bench"])
+    ap.add_argument("action", choices=["build", "gen", "pop", "creative", "bench"])
     ap.add_argument("--seeds", type=int, nargs="*", default=SEEDS)
     ap.add_argument("--side", type=int, default=32)
     ap.add_argument("--seed", type=int, default=0)
@@ -125,6 +126,10 @@ def main() -> None:
     elif a.action == "pop":
         build()
         gen(a.seeds, stages=False)
+    elif a.action == "creative":
+        build()
+        FIXTURES.mkdir(exist_ok=True)
+        java("creative", str(FIXTURES))
     else:
         build()
         java("bench", str(a.seed), str(a.side))

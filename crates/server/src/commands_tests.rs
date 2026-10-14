@@ -347,3 +347,31 @@ Reason: griefing the spawn".into())));
     assert_eq!(t.said(1, "ban-ip Bob"), vec!["Banned IP address 203.0.113.9 belonging to Bob"]);
     assert_eq!(t.bans.ips.len(), 2);
 }
+
+#[test]
+fn backup_and_rollback_are_for_ops() {
+    let mut t = T::new();
+    t.open = true;
+    for line in ["backup", "backup list", "rollback", "rollback x"] {
+        assert_eq!(t.said(2, line), vec![format!("!{PERMISSION}")], "{line}");
+    }
+    let e = t.run(1, "backup");
+    assert_eq!(e, vec![Effect::Feedback(Line::plain("Saving a backup of the world...")), Effect::Backup]);
+    assert_eq!(t.run(0, "backup").last(), Some(&Effect::Backup));
+    assert_eq!(t.said(1, "backup now"), vec!["!Usage: /backup [list]"]);
+    assert_eq!(t.said(1, "backup list"), vec!["There are 0 backups:"]);
+
+    let name = crate::backup::create(&t.dir, "").unwrap();
+    assert_eq!(t.said(1, "rollback list"), vec!["There are 1 backups:".to_string(), name.clone()]);
+    assert_eq!(t.said(1, "rollback 19990101-000000"), vec!["!There is no backup named 19990101-000000; /rollback list names them"]);
+    assert_eq!(t.said(1, "rollback ../edits.bin"), vec!["!There is no backup named ../edits.bin; /rollback list names them"]);
+    let e = t.run(1, &format!("rollback {name}"));
+    assert_eq!(e.first(), Some(&Effect::Rollback(Some(name.clone()))));
+    assert_eq!(e.len(), 2);
+    assert_eq!(t.said(1, "rollback cancel"), vec!["!No rollback is waiting"]);
+    // The hub writes the request (commands.rs `run`); the list then names it.
+    crate::backup::set_pending(&t.dir, Some(&name)).unwrap();
+    assert_eq!(t.said(1, "backup list").last().unwrap(), &format!("The world rolls back to {name} when the server next starts"));
+    assert_eq!(t.run(1, "rollback cancel"), vec![Effect::Rollback(None), Effect::Feedback(Line::plain("The rollback is cancelled"))]);
+    assert_eq!(t.said(1, "rollback a b"), vec!["!Usage: /rollback [list|cancel|<backup name>]"]);
+}

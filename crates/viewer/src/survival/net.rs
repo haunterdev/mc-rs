@@ -64,6 +64,20 @@ pub fn send_creative_slot(link: &Link, m: &proto::CreativeSlot) {
     link.send(proto::V_CREATIVE_SLOT, &m.encode());
 }
 
+/// A stack as `V_CREATIVE_SLOT` carries it, the tag as [`proto::WireStack`]'s three bytes.
+pub fn wire_stack(s: &::items::ItemStack) -> proto::WireStack {
+    if s.is_empty() {
+        return proto::WireStack::EMPTY;
+    }
+    let tag = match s.tag {
+        ::items::Tag::None => [0, 0, 0],
+        ::items::Tag::Potion(p) => [1, p, 0],
+        ::items::Tag::StoredEnchant { id, level } => [2, id, level],
+        ::items::Tag::Entity(e) => [3, e, 0],
+    };
+    proto::WireStack { tag, ..proto::WireStack::new(s.item as i16, s.count.clamp(0, 255) as u8, s.damage.clamp(0, u16::MAX as i32) as u16) }
+}
+
 pub fn send_respawn(link: &Link) {
     link.send(proto::V_RESPAWN, &proto::encode_empty());
 }
@@ -87,6 +101,7 @@ pub fn dispatch(world: &mut World) {
 fn decode_into(world: &mut World, tag: u8, b: &[u8]) -> Option<()> {
     match tag {
         proto::S_HEALTH => put(world, proto::Health::decode(b).map(Health)),
+        proto::S_SIGN => put(world, proto::SignText::decode(b).map(crate::sign::SignUpdate)),
         proto::S_XP => put(world, proto::Xp::decode(b).map(Xp)),
         proto::S_DEATH => put(world, proto::Death::decode(b).map(Death)),
         proto::S_HELD => put(world, proto::HeldSlot::decode(b).map(Held)),
@@ -213,7 +228,7 @@ mod tests {
         link.send(proto::V_STATE, &proto::PlayerState::default().encode());
         let ((t1, b1), (t2, _)) = server.join().unwrap();
         assert_eq!(t1, proto::V_CLIENT_INFO);
-        assert_eq!(proto::ClientInfo::decode(&b1), Some(proto::ClientInfo { version: 1 }));
+        assert_eq!(proto::ClientInfo::decode(&b1), Some(proto::ClientInfo { version: proto::SURVIVAL_PROTOCOL }));
         assert_eq!(t2, proto::V_STATE);
     }
 

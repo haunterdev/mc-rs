@@ -413,7 +413,7 @@ fn face_rect(face: &ButtonFace, hovered: bool) -> Rect {
 
 /// The halves are pinned to the button's left and right edges, so a fractional scale cannot open
 /// a gap between them; the label is the button's only flow child, centered by the button.
-fn button(commands: &mut Commands, widgets: &GuiWidgets, label: impl Bundle, width: u32, unit: f32) -> Entity {
+pub(crate) fn button(commands: &mut Commands, widgets: &GuiWidgets, label: impl Bundle, width: u32, unit: f32) -> Entity {
     let size = |n: u32| px(n as f32 * unit);
     let half = |right: bool| {
         let face = ButtonFace { right, width };
@@ -455,7 +455,7 @@ fn button(commands: &mut Commands, widgets: &GuiWidgets, label: impl Bundle, wid
 
 /// `drawCenteredString` with its shadow: the color at a quarter, one GUI pixel down and right.
 /// DROPPED: the jar's `ascii.png` font; the menu writes in Bevy's default font at the same height.
-fn text(s: String, unit: f32) -> impl Bundle {
+pub(crate) fn text(s: String, unit: f32) -> impl Bundle {
     (
         Text::new(s),
         TextFont { font_size: FontSize::Px(9.0 * unit), ..default() },

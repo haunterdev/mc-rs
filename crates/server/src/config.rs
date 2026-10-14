@@ -70,6 +70,11 @@ pub struct Config {
     /// The game mode of a player with no record yet: "survival", "creative", "adventure" or
     /// "spectator".
     pub default_game_mode: String,
+    /// Minutes between two timed world backups (backup.rs), made only when someone played since
+    /// the last one; 0 turns them off (`/backup` still makes one).
+    pub backup_minutes: u32,
+    /// The newest backups kept in `backups/`; older ones are removed. 0 keeps every one.
+    pub backup_keep: usize,
 }
 
 impl Default for Config {
@@ -103,6 +108,8 @@ impl Default for Config {
             max_entities: 300,
             jar: String::new(),
             default_game_mode: "survival".into(),
+            backup_minutes: 30,
+            backup_keep: 24,
         }
     }
 }
@@ -223,6 +230,9 @@ mod tests {
         assert!(c.commands_open() && c.ops.is_empty() && c.guests);
         assert_eq!((c.difficulty.as_str(), c.pvp, c.sim_distance, c.max_entities), ("normal", true, 8, 300));
         assert_eq!((c.jar.as_str(), c.default_game_mode.as_str()), ("", "survival"));
+        assert_eq!((c.backup_minutes, c.backup_keep), (30, 24));
+        let c: Config = serde_json::from_str(r#"{"backup_minutes": 0, "backup_keep": 3}"#).unwrap();
+        assert_eq!((c.backup_minutes, c.backup_keep), (0, 3));
         let c: Config = serde_json::from_str(r#"{"difficulty": "hard", "pvp": false, "sim_distance": 4}"#).unwrap();
         assert_eq!((c.difficulty.as_str(), c.pvp, c.sim_distance, c.max_entities), ("hard", false, 4, 300));
         let c: Config = serde_json::from_str(r#"{"commands": "ops", "ops": ["xy"]}"#).unwrap();

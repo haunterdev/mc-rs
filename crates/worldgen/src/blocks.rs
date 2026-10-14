@@ -58,6 +58,7 @@ pub mod id {
     pub const STANDING_SIGN: u16 = 63;
     pub const WOODEN_DOOR: u16 = 64;
     pub const LADDER: u16 = 65;
+    pub const WALL_SIGN: u16 = 68;
     pub const IRON_DOOR: u16 = 71;
     pub const REDSTONE_ORE: u16 = 73;
     pub const SNOW_LAYER: u16 = 78;

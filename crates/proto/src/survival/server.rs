@@ -93,7 +93,7 @@ impl WindowSlots {
         let mut r = Rd(b);
         let window = r.u8()?;
         let n = r.u16()? as usize;
-        if r.0.len() != n * 7 {
+        if r.0.len() != n * (2 + WireStack::SIZE) {
             return None;
         }
         let slots = (0..n).map(|_| Some((r.i16()?, r.stack()?))).collect::<Option<Vec<_>>>()?;
@@ -189,7 +189,7 @@ mod tests {
         trip(&Death { message: String::new() }, Death::encode, Death::decode, Some(2));
         trip(&HeldSlot { slot: 0 }, HeldSlot::encode, HeldSlot::decode, Some(HeldSlot::SIZE));
         let slots = WindowSlots { window: 0, slots: vec![(-1, COBBLE), (36, DIAMOND_SWORD), (45, WireStack::EMPTY)] };
-        trip(&slots, WindowSlots::encode, WindowSlots::decode, Some(3 + 3 * 7));
+        trip(&slots, WindowSlots::encode, WindowSlots::decode, Some(3 + 3 * (2 + WireStack::SIZE)));
         trip(&WindowSlots { window: 2, slots: vec![] }, WindowSlots::encode, WindowSlots::decode, Some(3));
         trip(&Confirm { window: 1, action: 7, accepted: true }, Confirm::encode, Confirm::decode, Some(Confirm::SIZE));
         let open = OpenWindow { window: 1, kind: WK_CHEST, rows: 6, pos: [10, 64, -20], title: "container.chestDouble".into() };
@@ -197,7 +197,7 @@ mod tests {
         trip(&CloseWindow { window: 1 }, CloseWindow::encode, CloseWindow::decode, Some(CloseWindow::SIZE));
         trip(&WindowProp { window: 2, property: 3, value: -200 }, WindowProp::encode, WindowProp::decode, Some(WindowProp::SIZE));
         let base = SpawnObject { id: 1_000_000, pos: [0.5, 65.0, -0.5], yaw: 45.0, pitch: -5.0, motion: [0.1, 0.2, -0.1], data: ObjectData::Item(COBBLE) };
-        trip(&base, SpawnObject::encode, SpawnObject::decode, Some(49 + 5));
+        trip(&base, SpawnObject::encode, SpawnObject::decode, Some(49 + WireStack::SIZE));
         let arrow = SpawnObject { data: ObjectData::Arrow { shooter: 1 }, ..base };
         trip(&arrow, SpawnObject::encode, SpawnObject::decode, Some(49 + 4));
         let sand = SpawnObject { data: ObjectData::FallingBlock { state: 12 << 4 }, ..base };

@@ -22,6 +22,7 @@
 //! and `InventoryCraftResult`, and `InventoryPlayer.timesChanged++` (dropped with T3).
 
 pub mod chest;
+pub mod creative;
 pub mod furnace;
 pub mod player;
 pub mod workbench;
@@ -30,6 +31,8 @@ pub mod workbench;
 mod tests;
 #[cfg(test)]
 mod tests_craft;
+#[cfg(test)]
+mod tests_creative;
 
 use items::stack::{are_item_stack_tags_equal, are_items_equal, ItemStack};
 
@@ -70,6 +73,8 @@ pub enum Inv {
     Craft,
     /// `InventoryCraftResult`, the container's `craftResult`.
     Result,
+    /// `GuiContainerCreative.basicInventory`, the 45 slots the item list scrolls through.
+    Basic,
 }
 
 /// Which `Slot` class.
@@ -131,6 +136,8 @@ pub enum ContainerKind {
     Player,
     /// `ContainerWorkbench` at the crafting table's block position.
     Workbench { pos: [i32; 3] },
+    /// `GuiContainerCreative.ContainerCreative`, the creative item tabs. Client only.
+    Creative,
 }
 
 /// `net.minecraft.inventory.Container`
@@ -159,6 +166,8 @@ pub struct Container {
     /// `getCanCraft(player)`: the player is not in `playerList`. A container here belongs to
     /// one player.
     pub can_craft: bool,
+    /// `basicInventory` and `itemList` of the creative window.
+    pub creative: Option<creative::Creative>,
 }
 
 impl Container {
@@ -175,6 +184,7 @@ impl Container {
             drag_slots: Vec::new(),
             crafting,
             can_craft: true,
+            creative: None,
         }
     }
 
@@ -207,6 +217,7 @@ impl Container {
             Inv::Player => p.inventory.get_stack_in_slot(index),
             Inv::Craft => self.crafting().craft_matrix.get_stack_in_slot(index),
             Inv::Result => self.crafting().craft_result.get_stack_in_slot(index),
+            Inv::Basic => self.basic_inv().basic[index],
         }
     }
 
@@ -220,6 +231,7 @@ impl Container {
                 self.on_craft_matrix_changed();
             }
             Inv::Result => self.crafting_mut().craft_result.set_inventory_slot_contents(index, stack),
+            Inv::Basic => self.basic_inv_mut().set_basic(index, stack),
         }
     }
 
@@ -237,13 +249,14 @@ impl Container {
                 s
             }
             Inv::Result => self.crafting_mut().craft_result.decr_stack_size(index, count),
+            Inv::Basic => self.basic_inv_mut().decr_basic(index, count),
         }
     }
 
-    /// `IInventory.getInventoryStackLimit()`: 64 for all three.
+    /// `IInventory.getInventoryStackLimit()`: 64 for all four.
     fn inv_limit(&self, inv: Inv) -> i32 {
         match inv {
-            Inv::Player | Inv::Craft | Inv::Result => 64,
+            Inv::Player | Inv::Craft | Inv::Result | Inv::Basic => 64,
         }
     }
 
@@ -255,6 +268,7 @@ impl Container {
             Inv::Player => p.inventory.inv.set_inventory_slot_contents(s.index, stack),
             Inv::Craft => self.crafting_mut().craft_matrix.set_inventory_slot_contents(s.index, stack),
             Inv::Result => self.crafting_mut().craft_result.set_inventory_slot_contents(s.index, stack),
+            Inv::Basic => self.basic_inv_mut().set_basic(s.index, stack),
         }
     }
 
@@ -383,20 +397,30 @@ impl Container {
         match self.kind {
             ContainerKind::Player => self.transfer_player(p, index),
             ContainerKind::Workbench { .. } => self.transfer_workbench(p, index),
+            ContainerKind::Creative => self.transfer_creative(p, index),
         }
     }
 
     /// `Container.canMergeSlot(stack, slot)`: `ContainerPlayer` and `ContainerWorkbench` keep
-    /// the double click out of the crafting result.
+    /// the double click out of the crafting result; `ContainerCreative` out of the item list
+    /// (`slotIn.yPos > 90`).
     pub fn can_merge_slot(&self, _stack: &ItemStack, i: usize) -> bool {
         match self.kind {
             ContainerKind::Player | ContainerKind::Workbench { .. } => self.slots[i].inventory != Inv::Result,
+            ContainerKind::Creative => self.slots[i].y > 90,
         }
     }
 
-    /// `Container.canDragIntoSlot(slot)`: true for every container here.
-    pub fn can_drag_into_slot(&self, _i: usize) -> bool {
-        true
+    /// `Container.canDragIntoSlot(slot)`: true, except that `ContainerCreative` keeps a drag out
+    /// of the item list.
+    pub fn can_drag_into_slot(&self, i: usize) -> bool {
+        match self.kind {
+            ContainerKind::Creative => {
+                let s = self.slots[i];
+                s.inventory == Inv::Player || s.y > 90 && s.x <= 162
+            }
+            _ => true,
+        }
     }
 
     /// `Container.resetDrag()`
@@ -779,6 +803,8 @@ impl Container {
                 self.clear_container(p);
             }
             ContainerKind::Workbench { .. } => self.clear_container(p),
+            // ContainerCreative keeps the base: the cursor only.
+            ContainerKind::Creative => {}
         }
     }
 }

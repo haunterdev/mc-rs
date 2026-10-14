@@ -140,6 +140,11 @@ Players type commands into chat with a leading slash; the server window takes th
 with its messages; the answer shows only in the chat of whoever typed it (an error in red),
 except where noted.
 
+From another shell on the host, `python tools/server_console.py say "Restarting in 30 seconds"`
+types a line into the server window, `read [lines]` prints the end of it, and `stop` sends Ctrl+C,
+which saves the world and exits. A restart for an update is `say`, a wait, `stop`, and starting the
+new build.
+
 | Command | Does |
 |---|---|
 | `/spawn [player]` | back to the world spawn, on the top block there (not in vanilla) |
@@ -156,6 +161,8 @@ except where noted.
 | `/tell`, `/msg`, `/w player message` | a whisper |
 | `/list`, `/seed`, `/help [page\|command]` | who is online, the seed, the commands you may use |
 | `/op player`, `/deop player` | the operator list (`"ops"` in `server.json`) |
+| `/backup`, `/backup list` | operators: saves the world and copies it into `backups/` now; names the newest backups |
+| `/rollback NAME`, `/rollback cancel`, `/rollback list` | operators: the world goes back to that backup at the next server start |
 
 Players can use `@p` (nearest), `@a` (everyone), `@r` (random) and `@s` (yourself) for a player.
 
@@ -194,6 +201,21 @@ All in `%APPDATA%\mc-rs\server` (`--data DIR` moves them):
 | `link.txt` | the current public link |
 | `tunnel.log` | cloudflared's own output, for a link that stops working or a join that drops |
 | `latency.log` | the timing reports above |
+| `backups/` | world backups, one folder each, named by the time they were made (see below) |
+
+## Backups and rollback
+
+Every `backup_minutes` while someone has played since the last one, and whenever an operator
+types `/backup` (or `backup` in the server window), the server saves the world and copies it to
+`backups/<YYYYMMDD-HHMMSS>`: the block changes, players, world file, signs and the other game
+files, paintings and their pictures, the accounts, bans and `server.json`. Only the newest
+`backup_keep` stay.
+
+To roll back, type `/rollback NAME` with a name from `/rollback list` and restart the server, or
+start it with `mc-rs-server.exe --rollback NAME`. Before the world loads, the server backs up the
+world as it is (`<time>-before-rollback`, so a rollback can itself be undone) and puts the
+backup's world files back. Accounts, sign-in tokens, bans and `server.json` stay as they are now;
+the backup folder still holds its copies of them for a manual restore.
 
 ## Settings (`server.json`)
 
@@ -212,6 +234,8 @@ All in `%APPDATA%\mc-rs\server` (`--data DIR` moves them):
 | `guests` | true | Play as guest without an account |
 | `commands` | `everyone` | who may run the commands that change the world or other players: `everyone` or `ops` |
 | `ops` | the first account | operators, who may run every command (see Commands) |
+| `backup_minutes` | 30 | minutes of play between two timed backups; 0 turns them off |
+| `backup_keep` | 24 | the newest backups kept; 0 keeps every one |
 | `difficulty` | `normal` | `peaceful`, `easy`, `normal` or `hard`: the starvation floor, mob damage to players; peaceful stops hostile spawning |
 | `pvp` | true | players may hurt each other |
 | `sim_distance` | 8 | chunks around each player the server keeps loaded and ticking |

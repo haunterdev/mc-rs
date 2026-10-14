@@ -290,7 +290,7 @@ pub struct Equipment {
 }
 
 impl Equipment {
-    pub const SIZE: usize = 10;
+    pub const SIZE: usize = 5 + WireStack::SIZE;
 
     pub fn encode(&self) -> Vec<u8> {
         Wr::new().u32(self.id).u8(self.slot).stack(self.stack).done()

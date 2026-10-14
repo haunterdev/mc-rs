@@ -4,6 +4,7 @@
 
 use proto::Teleport;
 
+use super::backup_cmds::{BACKUP, ROLLBACK};
 use super::{usage, world_spawn, Command, Ctx, Line, Perm, Effect, PERMISSION, R, UNKNOWN};
 use crate::bans::Ban;
 use crate::world::DEFAULT_RULES;
@@ -30,10 +31,11 @@ const KICK: &str = "/kick <player> [reason ...]";
 /// Vanilla's `/ban <name> [reason ...]` with `ip true|false` after the name.
 const BAN: &str = "/ban <name> [ip true|false] [reason ...]";
 const BAN_IP: &str = "/ban-ip <address|name> [reason ...]";
-const NOT_ONLINE: &str = "You have entered an invalid IP address or a player that is not online";
+const NOT_ONLINE: &str ="You have entered an invalid IP address or a player that is not online";
 
 /// Sorted by name, as `/help` lists them.
 pub(super) const COMMANDS: &[Command] = &[
+    Command { name: "backup", aliases: &[], usage: BACKUP, perm: Perm::OpsOnly, user: none, run: |c, a| c.backup(a) },
     Command { name: "ban", aliases: &[], usage: BAN, perm: Perm::OpsOnly, user: none, run: |c, a| c.ban(a) },
     Command { name: "ban-ip", aliases: &[], usage: BAN_IP, perm: Perm::OpsOnly, user: none, run: |c, a| c.ban_ip(a) },
     Command { name: "banlist", aliases: &[], usage: "/banlist [ips|players]", perm: Perm::OpsOnly, user: none, run: |c, a| c.banlist(a) },
@@ -48,6 +50,7 @@ pub(super) const COMMANDS: &[Command] = &[
     Command { name: "op", aliases: &[], usage: "/op <player>", perm: Perm::OpsOnly, user: none, run: |c, a| c.op(a) },
     Command { name: "pardon", aliases: &[], usage: "/pardon <name>", perm: Perm::OpsOnly, user: none, run: |c, a| c.pardon(a) },
     Command { name: "pardon-ip", aliases: &[], usage: "/pardon-ip <address>", perm: Perm::OpsOnly, user: none, run: |c, a| c.pardon_ip(a) },
+    Command { name: "rollback", aliases: &[], usage: ROLLBACK, perm: Perm::OpsOnly, user: none, run: |c, a| c.rollback(a) },
     Command { name: "say", aliases: &[], usage: "/say <message ...>", perm: Perm::Ops, user: none, run: |c, a| c.say(a) },
     Command { name: "seed", aliases: &[], usage: "/seed", perm: Perm::Ops, user: none, run: |c, a| c.seed(a) },
     Command { name: "setworldspawn", aliases: &[], usage: "/setworldspawn [<x> <y> <z>]", perm: Perm::Ops, user: none, run: |c, a| c.setworldspawn(a) },

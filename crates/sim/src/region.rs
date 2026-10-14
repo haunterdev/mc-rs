@@ -149,9 +149,10 @@ fn derive(s: u16) -> Props {
         light: st::light_value(s) as u8,
         layer: layer_of(block),
         liquid: matches!(block, id::FLOWING_WATER | id::WATER | id::FLOWING_LAVA | id::LAVA),
-        // getRenderType: INVISIBLE for air, ENTITYBLOCK_ANIMATED for the chest (a tile entity
-        // renderer the viewer does not draw).
-        invisible: mat == Mat::Air || block == id::CHEST,
+        // getRenderType: INVISIBLE for air and the signs (BlockContainer; the viewer draws them as
+        // tile entities), ENTITYBLOCK_ANIMATED for the chest (a tile entity renderer the viewer
+        // does not draw).
+        invisible: mat == Mat::Air || matches!(block, id::CHEST | id::STANDING_SIGN | id::WALL_SIGN),
         neighbor_brightness: mat != Mat::Air
             && (STAIRS.contains(&block)
                 || matches!(

@@ -4,7 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2021"
-version = "0.4.0"
+version = "0.4.1"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/haunterdev/mc-rs"
 
@@ -39,4 +39,15 @@ panic = "abort"
 opt-level = "s"
 
 [profile.dist.package.worldgen]
+opt-level = 3
+
+# The viewer inside that exe (tools/dist.py). Fat LTO with one codegen unit took 30 to 40 minutes
+# on every viewer change; thin LTO over 16 units runs on every core and keeps the payload under
+# the launcher's 20 MB limit.
+[profile.dist-viewer]
+inherits = "dist"
+lto = "thin"
+codegen-units = 16
+
+[profile.dist-viewer.package.worldgen]
 opt-level = 3

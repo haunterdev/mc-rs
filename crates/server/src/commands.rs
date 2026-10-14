@@ -9,7 +9,7 @@
 //! Permissions: with `server.json` "commands" at "everyone" (the default) every signed-in player
 //! may run every command but `/op` and `/deop`; at "ops" only the names in "ops" may run the ones
 //! that change the world or other players. The console may run everything. The ban and kick
-//! commands are ops only, as `/op` is. A guest may not chat or run `/me`, `/say` or `/tell`.
+//! commands are ops only, as `/op` is, and so are `/backup` and `/rollback` (backup.rs). A guest may not chat or run `/me`, `/say` or `/tell`.
 //!
 //! [`Ctx`] runs a command against the world and the players online and lists what has to
 //! happen ([`Effect`]); [`run`] does that with the hub's sessions. Feedback and broadcasts go to
@@ -24,6 +24,8 @@ use crate::world::World;
 
 #[path = "commands_exec.rs"]
 mod exec;
+#[path = "commands_backup.rs"]
+mod backup_cmds;
 
 use exec::COMMANDS;
 
@@ -65,6 +67,10 @@ pub enum Effect {
     Kick(String, String),
     /// The bans changed: write `bans.json` (bans.rs).
     Bans,
+    /// `/backup`: the backup thread saves and copies the world, then tells the sender (backup.rs).
+    Backup,
+    /// `/rollback NAME`: roll back to this backup at the next start; `None` cancels that.
+    Rollback(Option<String>),
 }
 
 /// A player online, as the commands see them.
@@ -361,7 +367,33 @@ pub fn run(hub: &Hub, sender: &Sender, line: &str) {
                     eprintln!("could not write bans.json: {e}");
                 }
             }
+            Effect::Backup => {
+                if !hub.request_backup(sender.id) {
+                    tell(sender.id, &Line::colored("Backups are not running on this server", "red"));
+                }
+            }
+            Effect::Rollback(name) => {
+                if let Err(e) = crate::backup::set_pending(&hub.dir, name.as_deref()) {
+                    tell(sender.id, &Line::colored(format!("Could not write the rollback request: {e}"), "red"));
+                }
+            }
         }
+    }
+}
+
+/// A line to one player's chat, or (`None`) the server window: white, or red for an error.
+pub fn notice(hub: &Hub, id: Option<u32>, text: Result<String, String>) {
+    let line = match text {
+        Ok(t) => Line::plain(t),
+        Err(t) => Line::colored(t, "red"),
+    };
+    match id {
+        Some(id) => {
+            if let Some(s) = hub.sessions().iter().find(|s| s.id == id) {
+                let _ = s.to_browser.send(ToBrowser::Text(chat_json(&line).to_string()));
+            }
+        }
+        None => println!("{}", line.text),
     }
 }
 

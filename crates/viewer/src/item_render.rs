@@ -185,12 +185,14 @@ pub fn spawn_items(
 /// DROPPED: the pickup pop (`animationsToGo`), the stack count and the durability bar. Vanilla
 /// draws the menu over the hotbar; here the icons draw after the UI, so under the options menu
 /// they stay on screen dimmed as its backdrop dims the bar, and chat leaves them as they are.
+/// Under the creative inventory they move back past the screen's backdrop, which covers them.
 #[allow(clippy::too_many_arguments)]
 pub fn update_items(
     window: Single<&Window, With<PrimaryWindow>>,
     inv: Res<Inventory>,
     hide: Res<HideGui>,
     options: Query<(), With<MenuRoot>>,
+    creative: Option<Res<crate::survival::gui::creative::Creative>>,
     hand: Res<Hand>,
     view: Res<View>,
     clock: Res<Clock>,
@@ -224,6 +226,8 @@ pub fn update_items(
             }
         }
     }
+    let under = creative.is_some_and(|c| c.screen.is_some());
+    let behind = Mat4::from_translation(Vec3::Z * if under { -500.0 } else { 0.0 });
     for (icon, mut mesh, mut material, mut transform, mut visibility) in &mut icons {
         let item = model_key(&inv.main[icon.0]).and_then(|key| items.0.get(&key));
         let Some(item) = item.filter(|_| !hide.0) else {
@@ -232,7 +236,7 @@ pub fn update_items(
         };
         let x = sw / 2 - 90 + icon.0 as i32 * 20 + 2;
         let y = sh - 16 - 3;
-        *transform = Transform::from_matrix(gui_matrix(x, y, item.gui));
+        *transform = Transform::from_matrix(behind * gui_matrix(x, y, item.gui));
         if mesh.0 != item.mesh {
             mesh.0 = item.mesh.clone();
         }

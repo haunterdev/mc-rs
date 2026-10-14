@@ -354,6 +354,7 @@ const enc = new TextEncoder();
 let pending = [];
 let moveX = 0, moveY = 0;
 let cursor = null;
+let lastFlush = 0;
 
 function event(bytes) { pending.push(bytes); }
 function f32pair(tag, a, b) {
@@ -383,8 +384,12 @@ function flush() {
   for (const p of pending) { out.set(p, o); o += p.length; }
   pending = [];
   ws.send(out);
+  lastFlush = performance.now();
 }
 setInterval(flush, 4);
+// Mouse turns go out as they happen (browsers hand mouse moves out once per display frame), at
+// most one batch every 2 ms; the 4 ms interval only catches what that leaves behind.
+function flushSoon() { if (performance.now() - lastFlush >= 2) flush(); }
 
 const locked = () => document.pointerLockElement === canvas;
 // Whether keys and the wheel go to the game: the pointer is locked, or, on a touch screen where
@@ -466,6 +471,7 @@ addEventListener('mousemove', (e) => {
   if (!inGame()) return;
   if (locked()) { moveX += e.movementX; moveY += e.movementY; }
   else if (focusState === 2) cursorAt(e);
+  flushSoon();
 });
 addEventListener('wheel', (e) => {
   if (!inGame() || (!captured() && focusState !== 2)) return;

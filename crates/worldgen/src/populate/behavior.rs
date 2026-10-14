@@ -89,8 +89,35 @@ pub fn neighbor_changed(w: &mut PopWorld, p: Pos, s: u16, _block: u16, _from: Po
         id::TORCH => {
             torch_on_neighbor_change_internal(w, p, s);
         }
+        // BlockStandingSign.neighborChanged
+        id::STANDING_SIGN => {
+            if !state::mat_solid(w.get(p.down())) {
+                drop_block_as_item(w, p, s);
+                w.set_air(p);
+            }
+        }
+        // BlockWallSign.neighborChanged
+        id::WALL_SIGN => {
+            if !state::mat_solid(w.get(p.offset(wall_sign_facing(s).opposite()))) {
+                drop_block_as_item(w, p, s);
+                w.set_air(p);
+            }
+        }
         _ => {}
     }
+}
+
+/// `BlockWallSign.getStateFromMeta`: `EnumFacing.byIndex(meta)`, NORTH for up and down.
+pub fn wall_sign_facing(s: u16) -> Facing {
+    match Facing::VALUES[(s & 15) as usize % 6] {
+        Facing::Up | Facing::Down => Facing::North,
+        f => f,
+    }
+}
+
+/// `BlockContainer.hasInvalidNeighbor`: a cactus beside it on any side.
+pub fn has_invalid_neighbor(w: &mut PopWorld, p: Pos) -> bool {
+    [Facing::North, Facing::South, Facing::West, Facing::East].iter().any(|&f| state::mat(w.get(p.offset(f))) == material::CACTUS)
 }
 
 /// `Block.updateTick`. Only liquids and falling blocks schedule ticks during population, so only
@@ -237,6 +264,8 @@ pub fn can_place_block_at(w: &mut PopWorld, p: Pos, block: u16) -> bool {
             state::mat_replaceable(w.get(p)) && state::is_top_solid(w.get(p.down()))
         }
         id::SNOW_LAYER => snow_can_place_at(w, p),
+        // BlockSign.canPlaceBlockAt
+        id::STANDING_SIGN | id::WALL_SIGN => !has_invalid_neighbor(w, p) && base_can_place(w, p),
         // BlockTorch.canPlaceBlockAt: any facing but DOWN.
         id::TORCH => TORCH_FACINGS.iter().any(|&f| torch_can_place_at(w.get(p.offset(f.opposite())), f)),
         _ => base_can_place(w, p),

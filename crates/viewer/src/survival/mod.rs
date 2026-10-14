@@ -19,7 +19,7 @@ mod chest_render;
 mod crack;
 mod death;
 mod falling;
-mod gui;
+pub mod gui;
 mod hud;
 mod hurt;
 mod items;

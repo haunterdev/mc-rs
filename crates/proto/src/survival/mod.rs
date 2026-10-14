@@ -19,8 +19,9 @@ pub use server::*;
 pub use server_entity::*;
 pub use wire::{MobMeta, WireStack};
 
-/// The survival protocol version a viewer announces in [`V_CLIENT_INFO`].
-pub const SURVIVAL_PROTOCOL: u16 = 1;
+/// The survival protocol version a viewer announces in [`V_CLIENT_INFO`]. 2: [`WireStack`]
+/// carries the tag (8 bytes). 3: sign text ([`V_SIGN`], [`S_SIGN`]).
+pub const SURVIVAL_PROTOCOL: u16 = 3;
 
 /// Viewer to server: [`ClientInfo`], once right after the welcome.
 pub const V_CLIENT_INFO: u8 = 60;
@@ -48,6 +49,8 @@ pub const V_CREATIVE_SLOT: u8 = 70;
 pub const V_RESPAWN: u8 = 71;
 /// Empty body ([`encode_empty`]): swap the main and off hand.
 pub const V_SWAP_HANDS: u8 = 72;
+/// [`SignText`]: the four lines the edit screen closed with (`CPacketUpdateSign`).
+pub const V_SIGN: u8 = 73;
 
 /// Server to viewer: [`Health`].
 pub const S_HEALTH: u8 = 160;
@@ -95,6 +98,9 @@ pub const S_BLOCK_ACTION: u8 = 180;
 pub const S_SOUND: u8 = 181;
 /// [`Explosion`]: changed blocks arrive as `S_BLOCKS`.
 pub const S_EXPLOSION: u8 = 182;
+/// [`SignText`]: a sign's lines, on join for every sign and after each edit
+/// (`SPacketUpdateTileEntity` for a sign).
+pub const S_SIGN: u8 = 183;
 
 /// `EnumHand`.
 pub const HAND_MAIN: u8 = 0;
@@ -182,8 +188,8 @@ pub const SOUND_CATEGORIES: u8 = 10;
 mod tests {
     use super::*;
 
-    pub(super) const DIAMOND_SWORD: WireStack = WireStack { id: 276, count: 1, meta: 17 };
-    pub(super) const COBBLE: WireStack = WireStack { id: 4, count: 64, meta: 0 };
+    pub(super) const DIAMOND_SWORD: WireStack = WireStack::new(276, 1, 17);
+    pub(super) const COBBLE: WireStack = WireStack::new(4, 64, 0);
     pub(super) const SHEEP: MobMeta = MobMeta { flags: MM_CHILD | MM_SHEARED, wool: 14, swell: 0 };
 
     /// Round-trips `m`, checks the body is `size` bytes when given, and that the body one byte
@@ -249,5 +255,8 @@ mod tests {
         // A string that is not UTF-8, and one whose length runs past the body.
         assert_eq!(Death::decode(&[2, 0, 0xC3, 0x28]), None);
         assert_eq!(Death::decode(&[5, 0, b'a']), None);
+        // A sign line longer than `readString(384)` takes.
+        let long = SignText { pos: [0; 3], lines: ["x".repeat(SIGN_LINE_MAX + 1), String::new(), String::new(), String::new()] };
+        assert_eq!(SignText::decode(&long.encode()), None);
     }
 }

@@ -284,6 +284,12 @@ impl BoxMesh {
     /// `ModelBox` and its six `TexturedQuad`s on a 64 x 64 texture, unmirrored.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn model_box(&mut self, u: i32, v: i32, x: f32, y: f32, z: f32, dx: i32, dy: i32, dz: i32, delta: f32) {
+        self.model_box_on(64.0, 64.0, u, v, x, y, z, dx, dy, dz, delta);
+    }
+
+    /// [`Self::model_box`] on a `tw` x `th` texture (`ModelBase.textureWidth` and `textureHeight`).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn model_box_on(&mut self, tw: f32, th: f32, u: i32, v: i32, x: f32, y: f32, z: f32, dx: i32, dy: i32, dz: i32, delta: f32) {
         let (x0, y0, z0) = (x - delta, y - delta, z - delta);
         let (x1, y1, z1) = (x + dx as f32 + delta, y + dy as f32 + delta, z + dz as f32 + delta);
         let v7 = Vec3::new(x0, y0, z0);
@@ -303,7 +309,7 @@ impl BoxMesh {
             ([v3, v4, v5, v6], u + dz + dx + dz, v + dz, u + dz + dx + dz + dx, v + dz + dy),
         ];
         for (p, u1, v1, u2, v2) in quads {
-            let (u1, v1, u2, v2) = (u1 as f32 / 64.0, v1 as f32 / 64.0, u2 as f32 / 64.0, v2 as f32 / 64.0);
+            let (u1, v1, u2, v2) = (u1 as f32 / tw, v1 as f32 / th, u2 as f32 / tw, v2 as f32 / th);
             // TexturedQuad.draw: (v2 - v1) x (v0 - v1).
             let n = (p[2] - p[1]).cross(p[0] - p[1]).normalize();
             let base = self.pos.len() as u32;

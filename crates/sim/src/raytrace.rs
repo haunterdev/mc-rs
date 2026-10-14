@@ -45,6 +45,12 @@ const MUSHROOM: Aabb = aabb(0.30000001192092896, 0.0, 0.30000001192092896, 0.699
 const REED: Aabb = aabb(0.125, 0.0, 0.125, 0.875, 1.0, 0.875);
 /// `BlockFarmland.FARMLAND_AABB`
 const FARMLAND: Aabb = aabb(0.0, 0.0, 0.0, 1.0, 0.9375, 1.0);
+/// `BlockSign.SIGN_AABB` and `BlockWallSign.SIGN_{NORTH, SOUTH, WEST, EAST}_AABB`.
+const SIGN_STANDING: Aabb = aabb(0.25, 0.0, 0.25, 0.75, 1.0, 0.75);
+const SIGN_NORTH: Aabb = aabb(0.0, 0.28125, 0.875, 1.0, 0.78125, 1.0);
+const SIGN_SOUTH: Aabb = aabb(0.0, 0.28125, 0.0, 1.0, 0.78125, 0.125);
+const SIGN_WEST: Aabb = aabb(0.875, 0.28125, 0.0, 1.0, 0.78125, 1.0);
+const SIGN_EAST: Aabb = aabb(0.0, 0.28125, 0.0, 0.125, 0.78125, 1.0);
 /// `BlockCactus.CACTUS_AABB`, the selection box.
 const CACTUS: Aabb = aabb(0.0625, 0.0, 0.0625, 0.9375, 1.0, 0.9375);
 /// `BlockVine.{UP, NORTH, EAST, SOUTH, WEST}_AABB`
@@ -99,6 +105,15 @@ pub fn bounding_box(w: &impl BlockAccess, s: u16, p: BlockPos) -> Aabb {
         // DROPPED: the connected-chest boxes, as in collision.rs.
         id::CHEST => CHEST,
         id::FARMLAND => FARMLAND,
+        // BlockSign.STANDING_AABB
+        id::STANDING_SIGN => SIGN_STANDING,
+        // BlockWallSign.getBoundingBox by FACING (meta), north for anything else.
+        id::WALL_SIGN => match s & 15 {
+            3 => SIGN_SOUTH,
+            4 => SIGN_WEST,
+            5 => SIGN_EAST,
+            _ => SIGN_NORTH,
+        },
         // BlockTorch.getBoundingBox
         id::TORCH => match torch_facing(s) {
             Facing::East => TORCH_EAST,

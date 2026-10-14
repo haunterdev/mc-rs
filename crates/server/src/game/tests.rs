@@ -25,6 +25,15 @@ fn game() -> (Game, Sender<GameMsg>, Arc<Mutex<Vec<Value>>>) {
     (g, tx, lines)
 }
 
+#[test]
+fn save_now_answers_once_the_files_are_written() {
+    let (mut g, _tx, _) = game();
+    let (done, wait) = channel();
+    g.handle(GameMsg::Save { done });
+    assert!(wait.try_recv().is_ok());
+    assert!(!g.stopping);
+}
+
 fn join(tx: &Sender<GameMsg>, id: u32, name: &str) -> mpsc::UnboundedReceiver<Vec<u8>> {
     let (to_viewer, rx) = mpsc::unbounded_channel();
     tx.send(GameMsg::Join { id, name: name.into(), to_viewer, mode: proto::GM_SURVIVAL, survival_client: false }).unwrap();

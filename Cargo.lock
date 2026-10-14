@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "brand"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "embed-resource",
 ]
@@ -3332,7 +3332,7 @@ dependencies = [
 
 [[package]]
 name = "items"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde_json",
  "worldgen",
@@ -3373,7 +3373,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jar"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "miniz_oxide 0.8.9",
  "paths",
@@ -3504,7 +3504,7 @@ dependencies = [
 
 [[package]]
 name = "launcher"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "brand",
  "eframe",
@@ -4384,7 +4384,7 @@ dependencies = [
 
 [[package]]
 name = "paths"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "peniko"
@@ -4577,7 +4577,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "proto"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "pxfm"
@@ -5061,7 +5061,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "argon2",
  "axum",
@@ -5122,7 +5122,7 @@ dependencies = [
 
 [[package]]
 name = "sim"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "glam",
  "items",
@@ -5931,7 +5931,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "viewer"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "bevy",
  "brand",
@@ -6885,7 +6885,7 @@ dependencies = [
 
 [[package]]
 name = "worldgen"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "flate2",
  "serde_json",
