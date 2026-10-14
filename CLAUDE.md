@@ -118,6 +118,11 @@ web clients (`tools/server_e2e.py`), and with a native client next to a streamed
 `tools/stream_probe.py` plays it like a browser and measures input to frame, and
 `tools/picture_probe.py` (release build, headless viewer) uploads a picture through `/api/media`,
 changes the picture size and rate mid-game, and checks a second player's viewer fetches the painting.
+`tools/join_check.py` starts a local server on a spare port, signs a player in and runs the shipping
+viewer with `--join` on that token (`--smoke` keeps the window hidden and takes its settings from the
+command line), then checks the welcome line, a live process at the end of the run and no panic. That
+is the app-assembly half of the join path; the `#[ignore]`d `joins_a_running_server` test covers the
+transport half.
 
 Delay diagnosis: every session writes `latency.log` (JSON lines) in the server's data folder:
 `source: browser` every 5 s (input to frame and to shown, ping, decode, host pipeline, frame
@@ -148,6 +153,7 @@ is `sim::region::layer_of`, the tint `colors::multiplier`, a neighbour-dependent
 `mesher::actual_state`, a non-full collision box `sim::collision::collision_box`.
 
 Memory: the release test build of the viewer peaks near 2 GB, where the dev test build passes
-4.3 GB, so test the viewer with `--release`. `tools/bench.py`, `tools/fixtures.py` and
-`tools/dist.py` run their heavy processes behind the memory guard `MCRS_RAMGUARD` names, when set.
+4.3 GB, so test the viewer with `--release`. `tools/bench.py`, `tools/fixtures.py`,
+`tools/dist.py` and `tools/join_check.py` run their heavy processes behind the memory guard
+`MCRS_RAMGUARD` names, when set.
 

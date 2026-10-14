@@ -355,7 +355,11 @@ fn main() {
         .insert_resource(audio::MusicTicker::default())
         .insert_resource(particles::Particles::default());
     if let Some(link) = link {
-        app.insert_resource(link).insert_resource(link::StreamCursor::default());
+        app.insert_resource(link)
+            .insert_resource(link::StreamCursor::default())
+            // Every path with a Link runs link::receive, so NewPicture has to exist for all of
+            // them: a native join only ever stores it (S_PICTURE comes from the streaming tuner).
+            .init_resource::<link::NewPicture>();
     }
     app.add_plugins((
         FrameTimeDiagnosticsPlugin::default(),
@@ -431,7 +435,6 @@ fn main() {
         app.add_systems(Startup, link::setup_video.before(setup))
             .add_systems(PostStartup, link::retarget_cameras)
             .insert_resource(link::Pace::new(stream_fps))
-            .init_resource::<link::NewPicture>()
             .add_systems(First, (link::pace, link::receive, link::change_picture, link::stamp).chain())
             .add_systems(PreUpdate, link::ui_pointer.after(bevy::ui::UiSystems::Focus))
             .add_systems(Update, (link::send.after(player::run_ticks), link::watch_encoder, link::report_stats));

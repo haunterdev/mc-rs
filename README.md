@@ -6,6 +6,11 @@ in a browser.
 
 ![A jungle coast at seed 1, rendered by mc-rs](docs/images/screenshot.jpg)
 
+> **A note on AI:** this project leans heavily on AI development. If you are against AI, mc-rs
+> may not be for you.
+
+Why it exists and what it aims for: [docs/PURPOSE.md](docs/PURPOSE.md).
+
 ## What it does
 
 - **Same worlds as 1.12.2.** Terrain, biomes, caves, ravines, lakes, ores, trees and plants match
