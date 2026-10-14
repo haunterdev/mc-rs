@@ -51,6 +51,14 @@ reads the tunnel's credentials from `%USERPROFILE%\.cloudflared`. It prints the 
 first tunnel connection registers. Friends type `play.example.com` in the launcher's Join tab,
 or open it in the browser.
 
+On Cloudflare's free plan the domain's traffic is served from whichever colo has room, often
+far from home (measured 2026-10-14: about 100 ms ping against 48 ms for a quick tunnel from the
+same PC). `python tools/fast_link.py` starts a quick tunnel next to the running server and points
+the domain's front page at it with a 302, so browser players get the near colo while the
+address stays fixed. The launcher's Join on the domain keeps the named tunnel. The redirect needs
+an API token with Zone, Single Redirect, Edit, saved as `cloudflare-token.txt` in the data
+folder; run the script again after a reboot, since the quick tunnel's link changes.
+
 Close the window or press Ctrl+C to stop; the world saves every 10 seconds and on exit.
 cloudflared and the viewers close with the server, the window's close button included.
 
