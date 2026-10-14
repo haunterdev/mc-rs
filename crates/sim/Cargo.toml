@@ -1,0 +1,16 @@
+[package]
+name = "sim"
+description = "Minecraft 1.12.2 game simulation shared by the viewer and the server: collision, terrain, entities, inventories, containers"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+# Exports the test fixtures (`sim::testing`); the viewer turns it on in `[dev-dependencies]`.
+testing = []
+
+[dependencies]
+worldgen = { path = "../worldgen" }
+items = { path = "../items" }
+# The glam Bevy 0.19.1's bevy_math uses (Cargo.lock), so `glam::DVec3` is `bevy::math::DVec3`.
+glam = "0.32"

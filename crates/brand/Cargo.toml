@@ -1,0 +1,12 @@
+[package]
+name = "brand"
+description = "The mc-rs icon, drawn in code, and the Windows resources (icon, version info, manifest) both exes carry"
+edition.workspace = true
+version.workspace = true
+
+[features]
+# Build scripts only: compiling the resource script.
+build = ["dep:embed-resource"]
+
+[dependencies]
+embed-resource = { version = "3", optional = true }

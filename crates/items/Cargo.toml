@@ -1,0 +1,10 @@
+[package]
+name = "items"
+description = "Minecraft 1.12.2 items, tools, harvesting, block drops, crafting, smelting and food, ported 1:1"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+worldgen = { path = "../worldgen" }
+serde_json = "1"

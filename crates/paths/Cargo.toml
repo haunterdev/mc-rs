@@ -1,0 +1,7 @@
+[package]
+name = "paths"
+description = "Where mc-rs keeps its files on a player's PC, shared by the launcher and the viewer"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]

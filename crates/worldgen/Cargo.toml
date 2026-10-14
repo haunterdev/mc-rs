@@ -1,0 +1,11 @@
+[package]
+name = "worldgen"
+description = "Minecraft 1.12.2 overworld terrain generation, bit-exact"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+flate2 = "1"
+serde_json = "1"

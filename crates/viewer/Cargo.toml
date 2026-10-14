@@ -1,0 +1,78 @@
+[package]
+name = "viewer"
+description = "Fly-through viewer for mc-rs terrain"
+edition.workspace = true
+version.workspace = true
+
+[features]
+# The shareable build from tools/dist.py: a window-only exe with no console.
+share = []
+
+[dependencies]
+paths = { path = "../paths" }
+worldgen = { path = "../worldgen" }
+proto = { path = "../proto" }
+jar = { path = "../jar" }
+sim = { path = "../sim" }
+items = { path = "../items" }
+cpal = "0.15"
+lewton = "0.10"
+# Bevy's "3d" and "ui" sets minus glTF, scenes, animation, gizmos, picking, UI widgets, gamepads
+# and the clipboard, none of which the viewer uses; they were megabytes of the shared exe.
+bevy = { version = "0.19.1", default-features = false, features = [
+    "std",
+    "async_executor",
+    "multi_threaded",
+    "bevy_asset",
+    "bevy_log",
+    "bevy_state",
+    "reflect_auto_register",
+    "bevy_winit",
+    "x11",
+    "wayland",
+    "default_font",
+    "sysinfo_plugin",
+    "bevy_camera",
+    "bevy_color",
+    "bevy_image",
+    "bevy_mesh",
+    "bevy_shader",
+    "bevy_material",
+    "bevy_text",
+    "bevy_window",
+    "png",
+    "jpeg",
+    "webp",
+    "bmp",
+    "bevy_light",
+    "bevy_mikktspace",
+    "ktx2",
+    "zstd_rust",
+    "smaa_luts",
+    "tonemapping_luts",
+    "bevy_render",
+    "bevy_core_pipeline",
+    "bevy_anti_alias",
+    "bevy_pbr",
+    "bevy_post_process",
+    "bevy_input_focus",
+    "bevy_ui",
+    "bevy_ui_render",
+] }
+crossbeam-channel = "0.5"
+# media.rs: GIFs dropped into the world, every frame.
+gif = "0.14"
+png = "0.18"
+# `--join` (join.rs): the server's WebSocket over rustls with ring and the webpki roots, the TLS
+# stack the launcher already carries through ureq.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json = "1"
+sysinfo = { version = "0.38", default-features = false, features = ["system"] }
+tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+sim = { path = "../sim", features = ["testing"] }
+
+[build-dependencies]
+brand = { path = "../brand", features = ["build"] }

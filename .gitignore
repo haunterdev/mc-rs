@@ -1,0 +1,17 @@
+
+# Rust
+target/
+/dist/
+
+# Derived from the Mojang decompile: worldgen fixtures and the compiled harness.
+/fixtures/
+/harness/build/
+
+__pycache__/
+*.log
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

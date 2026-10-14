@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+version = "0.3.0"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/haunterdev/mc-rs"
+
+# Optimized dev builds keep overflow checks on, so a Java overflow site ported without a wrapping
+# op panics in the fixture tests instead of passing silently in release.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev.package.worldgen]
+opt-level = 3
+
+# Full debug info on the Bevy-generic viewer crate pushes one rustc past 4 GB.
+[profile.dev.package.viewer]
+debug = "line-tables-only"
+
+[profile.release]
+debug = "line-tables-only"
+# Rebuilds only the codegen units a change touches in the workspace crates (dependencies are never
+# incremental), which is most of the speedup in docs/guides/building.md.
+incremental = true
+
+# The single exe players download (tools/dist.py): whole-program LTO, no unwinding, optimized
+# for size except the terrain generator, which keeps full speed.
+[profile.dist]
+inherits = "release"
+debug = false
+incremental = false
+strip = true
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+opt-level = "s"
+
+[profile.dist.package.worldgen]
+opt-level = 3

@@ -1,0 +1,5 @@
+# rust-lld (shipped with every rustup toolchain) links the viewer in a fraction of link.exe's
+# time: with incremental release builds (Cargo.toml), a one-line viewer change rebuilt in 13 to
+# 16 s against 85 to 90 s with link.exe and no incremental (docs/guides/building.md, Build speed).
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"

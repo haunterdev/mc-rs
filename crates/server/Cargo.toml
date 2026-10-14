@@ -1,0 +1,26 @@
+[package]
+name = "server"
+description = "mc-rs-server: hosts a shared world and streams one viewer session per browser player"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "mc-rs-server"
+path = "src/main.rs"
+
+[dependencies]
+paths = { path = "../paths" }
+proto = { path = "../proto" }
+sim = { path = "../sim" }
+worldgen = { path = "../worldgen" }
+crossbeam-channel = "0.5"
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "process", "io-util", "sync", "time", "signal", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

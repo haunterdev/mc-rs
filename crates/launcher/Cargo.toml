@@ -1,0 +1,23 @@
+[package]
+name = "launcher"
+description = "mc-rs-launcher.exe, the exe players download: a launcher window that installs, updates and starts the viewer"
+edition.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "mc-rs-launcher"
+path = "src/main.rs"
+
+[dependencies]
+brand = { path = "../brand" }
+paths = { path = "../paths" }
+# The OpenGL backend: a fraction of wgpu's size, and the launcher draws only a few widgets.
+eframe = { version = "0.36", default-features = false, features = ["glow", "default_fonts"] }
+ring = "0.17"
+ruzstd = "0.8"
+serde_json = "1"
+# In-process HTTPS (rustls with the webpki roots), for the client jar and the update channel.
+ureq = "3"
+
+[build-dependencies]
+brand = { path = "../brand", features = ["build"] }

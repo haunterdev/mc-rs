@@ -1,0 +1,7 @@
+[package]
+name = "proto"
+description = "Messages between the mc-rs server and its streamed viewer sessions"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]

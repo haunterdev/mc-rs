@@ -1,0 +1,11 @@
+[package]
+name = "jar"
+description = "Reads assets out of the local Minecraft 1.12.2 client jar"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+paths = { path = "../paths" }
+miniz_oxide = "0.8"
+serde_json = "1"
