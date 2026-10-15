@@ -29,6 +29,8 @@ const PENDING: &str = "rollback.txt";
 const KEPT: &[&str] = &["accounts.json", "tokens.json", "bans.json", "server.json"];
 /// The pictures players hung, by content hash.
 const MEDIA: &str = "media";
+/// One file per player (game/playerdata.rs).
+const PLAYERDATA: &str = "playerdata";
 /// A backup being written; never listed, removed by the next prune.
 const PARTIAL: &str = ".partial";
 
@@ -112,6 +114,8 @@ pub fn create(dir: &Path, suffix: &str) -> io::Result<String> {
         let kind = entry.file_type()?;
         if kind.is_file() && saved_file(file) {
             std::fs::copy(entry.path(), tmp.join(file))?;
+        } else if kind.is_dir() && file == PLAYERDATA {
+            copy_players(&entry.path(), &tmp.join(PLAYERDATA))?;
         } else if kind.is_dir() && file == MEDIA {
             let to = tmp.join(MEDIA);
             std::fs::create_dir_all(&to)?;
@@ -128,6 +132,18 @@ pub fn create(dir: &Path, suffix: &str) -> io::Result<String> {
     }
     std::fs::rename(&tmp, root.join(&name))?;
     Ok(name)
+}
+
+/// Copies the `.json` files of a folder into `to`, which is made.
+fn copy_players(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for f in std::fs::read_dir(from)? {
+        let f = f?;
+        if f.file_type()?.is_file() && f.file_name().to_str().is_some_and(|n| n.ends_with(".json")) {
+            std::fs::copy(f.path(), to.join(f.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The backups, newest first.
@@ -181,6 +197,8 @@ pub fn restore(dir: &Path, name: &str) -> io::Result<String> {
             std::fs::remove_file(entry.path())?;
         }
     }
+    // Players made after the backup have no file in it: gone, like the module files.
+    let _ = std::fs::remove_dir_all(dir.join(PLAYERDATA));
     for entry in std::fs::read_dir(&from)? {
         let entry = entry?;
         let file = entry.file_name();
@@ -188,6 +206,8 @@ pub fn restore(dir: &Path, name: &str) -> io::Result<String> {
         let kind = entry.file_type()?;
         if kind.is_file() && saved_file(file) && !KEPT.contains(&file) {
             std::fs::copy(entry.path(), dir.join(file))?;
+        } else if kind.is_dir() && file == PLAYERDATA {
+            copy_players(&entry.path(), &dir.join(PLAYERDATA))?;
         } else if kind.is_dir() && file == MEDIA {
             // Pictures are named by their content, so the ones here already match; add the rest.
             let to = dir.join(MEDIA);

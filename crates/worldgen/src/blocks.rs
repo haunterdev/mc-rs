@@ -12,6 +12,11 @@ pub const fn block_of(state: u16) -> u16 {
     state >> 4
 }
 
+/// The seven `BlockDoor`s: oak, iron, and spruce to dark oak.
+pub const fn is_door(block: u16) -> bool {
+    matches!(block, id::WOODEN_DOOR | id::IRON_DOOR) || (block >= id::SPRUCE_DOOR && block <= id::DARK_OAK_DOOR)
+}
+
 pub mod id {
     pub const AIR: u16 = 0;
     pub const STONE: u16 = 1;
@@ -54,6 +59,7 @@ pub mod id {
     pub const MOB_SPAWNER: u16 = 52;
     pub const CHEST: u16 = 54;
     pub const DIAMOND_ORE: u16 = 56;
+    pub const WHEAT: u16 = 59;
     pub const FARMLAND: u16 = 60;
     pub const STANDING_SIGN: u16 = 63;
     pub const WOODEN_DOOR: u16 = 64;
@@ -79,6 +85,8 @@ pub mod id {
     pub const BROWN_MUSHROOM_BLOCK: u16 = 99;
     pub const RED_MUSHROOM_BLOCK: u16 = 100;
     pub const MELON_BLOCK: u16 = 103;
+    pub const PUMPKIN_STEM: u16 = 104;
+    pub const MELON_STEM: u16 = 105;
     pub const VINE: u16 = 106;
     pub const MYCELIUM: u16 = 110;
     pub const WATERLILY: u16 = 111;
@@ -90,6 +98,8 @@ pub mod id {
     pub const EMERALD_ORE: u16 = 129;
     pub const BEACON: u16 = 138;
     pub const COBBLESTONE_WALL: u16 = 139;
+    pub const CARROTS: u16 = 141;
+    pub const POTATOES: u16 = 142;
     pub const STAINED_HARDENED_CLAY: u16 = 159;
     pub const LEAVES2: u16 = 161;
     pub const LOG2: u16 = 162;
@@ -105,9 +115,13 @@ pub mod id {
     pub const SPRUCE_FENCE: u16 = 188;
     pub const ACACIA_FENCE: u16 = 192;
     pub const SPRUCE_DOOR: u16 = 193;
+    pub const BIRCH_DOOR: u16 = 194;
+    pub const JUNGLE_DOOR: u16 = 195;
+    pub const ACACIA_DOOR: u16 = 196;
     pub const DARK_OAK_DOOR: u16 = 197;
     pub const PURPUR_DOUBLE_SLAB: u16 = 204;
     pub const PURPUR_SLAB: u16 = 205;
+    pub const BEETROOTS: u16 = 207;
     pub const END_GATEWAY: u16 = 209;
     pub const FROSTED_ICE: u16 = 212;
     pub const STRUCTURE_VOID: u16 = 217;

@@ -125,7 +125,7 @@ pub fn drop_block_as_item_with_chance(state: u16, chance: f32, fortune: i32, ran
                 spawn_as_entity(&mut out, ItemStack::of(item::POISONOUS_POTATO), rand);
             }
         }
-        // BlockJukebox: fortune 0. DROPPED: the record, which breakBlock ejects from the tile.
+        // BlockJukebox: fortune 0. The record is ejected from the tile by the server (game/jukebox.rs).
         block::JUKEBOX => default_drop(&mut out, state, chance, 0, rand),
         // BlockLeaves
         block::LEAVES | block::LEAVES2 => {

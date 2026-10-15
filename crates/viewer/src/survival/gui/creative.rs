@@ -9,8 +9,7 @@
 //!
 //! DROPPED: the hotbar snapshots (`CreativeSettings`, the C and X keys; the hotbar tab shows
 //! only its locked papers), the player model on the inventory tab
-//! (`GuiInventory.drawEntityOnScreen`), the stats button, item rarity colors and every
-//! tooltip line after the name, the italic of a custom name, the search field's cursor
+//! (`GuiInventory.drawEntityOnScreen`), the stats button, the advanced (F3+H) tooltip lines, the italic of a custom name, the search field's cursor
 //! movement, selection and clipboard (typing appends, Backspace deletes the last character),
 //! characters outside ASCII (the unicode font), and the search tree's tooltip-line matches
 //! (names and registry ids are searched).
@@ -24,7 +23,7 @@ use items::creative::{display_all_relevant_items, enchantment, tab_of, Tab};
 use items::ids::item;
 use items::names::display_name;
 use items::stack::are_item_stack_tags_equal;
-use items::{ItemStack, Tag};
+use items::ItemStack;
 use sim::container::{get_drag_event, ClickType, Container, Inv, PlayerRef};
 use sim::inventory::InventoryPlayer;
 use sim::lang::Arg;
@@ -45,10 +44,17 @@ use crate::survival::net::{send_creative_slot, wire_stack};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Creative>()
+        .add_systems(Startup, warm_tab_list)
         .add_systems(
         Update,
         (keys.after(settings::toggle_menu).before(crate::input::focus), draw_screen.after(keys)).run_if(resource_exists::<super::ContainerImages>),
     );
+}
+
+/// Builds the saved tab's list once at start (it walks the whole item registry), so the
+/// first `initGui` finds the registry initialised and its pages hot.
+fn warm_tab_list() {
+    let _ = display_all_relevant_items(Creative::default().tab);
 }
 
 /// The open screen, and what outlives it: `selectedTabIndex` is static in Java.
@@ -348,6 +354,11 @@ impl CreativeScreen {
         }
 
         self.draw_background(frame, font, gui);
+        // GuiInventory.drawEntityOnScreen, the player on the inventory tab.
+        if self.tab == Tab::Inventory {
+            let (x, y) = (gui.left + 88, gui.top + 45);
+            frame.player_model = Some(draw::PlayerModel { x, y, scale: 20, mouse_x: (x - mx) as f32, mouse_y: (y - 30 - my) as f32 });
+        }
         draw_slots(self, frame, font, inv, gui, mx, my);
         if self.tab.draws_title() {
             let title = lang.0.translate(&self.tab.translation_key()).to_string();
@@ -393,7 +404,6 @@ impl CreativeScreen {
             frame.bands[draw::FRONT].sprite(gui.left + 175, thumb_y(gui, self.scroll), u, 0, 12, 15);
         }
         self.draw_tab(frame, gui, self.tab, draw::FRONT);
-        // DROPPED: GuiInventory.drawEntityOnScreen, the player on the inventory tab.
     }
 
     /// `drawTab`
@@ -446,11 +456,12 @@ impl CreativeScreen {
         } else {
             display_name(stack, lang.0.map())
         };
-        let mut lines = vec![(name, 0xFFFFFF, false)];
+        let mut lines = vec![if self.locked(stack) { (name, 0xFFFFFF, false) } else { super::enchanting::name_line(stack, name) }];
+        lines.extend(super::enchanting::tooltip_lines(stack, &lang.0));
         if self.tab == Tab::Search {
             let mut tab = tab_of(stack.get_item());
             if tab.is_none() && stack.get_item() == item::ENCHANTED_BOOK {
-                if let Tag::StoredEnchant { id, .. } = stack.tag {
+                if let Some((id, _)) = stack.ench.iter().next() {
                     let ty = enchantment(id).and_then(|e| e.ty);
                     tab = Tab::ALL.into_iter().find(|t| t.has_relevant_enchantment_type(ty));
                 }
@@ -709,7 +720,7 @@ impl Screen for CreativeScreen {
 }
 
 /// The pointer in physical pixels from the window's top left: the stream's when streamed.
-fn pointer(window: &Window, stream: Option<&StreamCursor>) -> Option<Vec2> {
+pub(super) fn pointer(window: &Window, stream: Option<&StreamCursor>) -> Option<Vec2> {
     stream.and_then(|c| c.0).or_else(|| window.physical_cursor_position())
 }
 
@@ -826,7 +837,7 @@ fn keys(
 
 /// Fills the [`Frame`] from the open screen.
 #[allow(clippy::too_many_arguments)]
-fn draw_screen(
+pub(super) fn draw_screen(
     mut creative: ResMut<Creative>,
     mut frame: ResMut<Frame>,
     mut inventory: ResMut<Inventory>,
@@ -835,11 +846,13 @@ fn draw_screen(
     mouse: Res<ButtonInput<MouseButton>>,
     font: Option<Res<Font>>,
     lang: Option<Res<GuiLang>>,
+    windows: Res<super::window::Windows>,
 ) {
     let frame = &mut *frame;
     let was_open = frame.open;
     let Some(screen) = creative.screen.as_mut() else {
-        if was_open {
+        // The survival screens draw into the same frame.
+        if was_open && windows.screen.is_none() {
             frame.clear();
         }
         return;
@@ -948,9 +961,11 @@ mod tests {
 
     #[test]
     fn wire_stacks_carry_the_tag() {
-        let book = ItemStack::new(item::ENCHANTED_BOOK, 1, 0).with_tag(Tag::StoredEnchant { id: 16, level: 3 });
+        let book = ItemStack::new(item::ENCHANTED_BOOK, 1, 0).with_ench(items::EnchList::from_pairs([(16, 3)]));
         let w = wire_stack(&book);
-        assert_eq!((w.id, w.count, w.meta, w.tag), (item::ENCHANTED_BOOK as i16, 1, 0, [2, 16, 3]));
+        assert_eq!((w.id, w.count, w.meta, w.tag), (item::ENCHANTED_BOOK as i16, 1, 0, [0, 0, 0]));
+        assert_eq!(&w.ench[..2], &[16, 3]);
+        assert_eq!(crate::survival::items::stack_of(&w), book);
         assert_eq!(wire_stack(&ItemStack::EMPTY), proto::WireStack::EMPTY);
     }
 }

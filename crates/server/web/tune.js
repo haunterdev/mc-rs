@@ -136,6 +136,14 @@ const tune = {
         if (f > fps && needKbps(w, f) * 0.75 <= budget && decodeAt(w) <= 500 / f) { fps = f; break; }
       }
     }
+    // Until a minute has run smooth on this device (`mcrs.tune.held`), start no higher than
+    // 1280x720 at 60 fps: players who saw a slow first picture left before the watcher stepped
+    // down, and the watcher raises it after a minute with room to spare.
+    if (store.get('mcrs.tune.held') !== '1' && (w > 1280 || fps > 60)) {
+      w = sizes.filter((x) => x <= Math.min(w, 1280)).pop() || sizes[0];
+      fps = Math.min(fps, 60);
+      why.push('starting at 720p60 until a minute runs smooth');
+    }
     // Steps down the watcher took after a session that could not keep up.
     for (let i = 0; i < cap; i++) {
       if (fps > 60) fps = 60;

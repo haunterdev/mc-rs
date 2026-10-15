@@ -38,14 +38,20 @@ async function boot() {
   // Measures in the background while the player signs in; Play waits for it.
   autoPick();
   if (token) {
-    const r = await fetch('/api/me?token=' + encodeURIComponent(token)).catch(() => null);
+    let r = null;
+    try {
+      r = await fetch('/api/me?token=' + encodeURIComponent(token));
+    } catch {}
     if (r && r.ok) {
       const me = await r.json();
       showSignedIn(me.name, me.guest);
       return;
     }
+    // Only a server that answers and refuses the token ends the saved sign-in. While it is
+    // restarting or unreachable (the usual state just after a relaunch) the saved token stays,
+    // so the next visit is signed in again; this visit falls back to the name and password.
+    if (r && (r.status === 401 || r.status === 403)) store.set('mcrs.token', null);
     token = null;
-    store.set('mcrs.token', null);
   }
   const last = store.get('mcrs.name');
   if (last) { $('#name').value = last; $('#password').focus(); } else { $('#name').focus(); }

@@ -359,6 +359,7 @@ pub fn receive(
                     crate::teleport::apply(&mut player, &tp);
                 }
             }
+            proto::S_DIFFICULTY if !body.is_empty() => player.difficulty = body[0],
             proto::S_GAMEMODE if !body.is_empty() => crate::teleport::set_game_mode(&mut player, body[0]),
             // Shared paintings (media.rs).
             proto::S_MEDIA => {
@@ -424,14 +425,9 @@ pub fn send(
     if player.flying {
         flags |= proto::FLYING;
     }
-    let s = PlayerState {
-        pos: player.pos.to_array(),
-        yaw: player.yaw,
-        pitch: player.pitch,
-        flags,
-        swings: hand.swings,
-        held: crate::hotbar::held_state(&inv.get_current_item()),
-    };
+    let (held, held_item, held_meta) = crate::players::held_fields(&inv.get_current_item());
+    let (_, held_item_off, held_meta_off) = crate::players::held_fields(&inv.get_stack_in_slot(40));
+    let s = PlayerState { pos: player.pos.to_array(), yaw: player.yaw, pitch: player.pitch, flags, swings: hand.swings, held, held_item, held_meta, held_item_off, held_meta_off };
     link.idle_ticks += clock.ticks_this_frame;
     if link.last_state != Some(s) || link.idle_ticks >= 20 {
         link.idle_ticks = 0;
@@ -678,7 +674,8 @@ pub fn report_stats(
         "frame_ms_worst": worst_dt * 1000.0,
         "grab_ms_avg": g.total.as_secs_f32() * 1000.0 / g.frames.max(1) as f32,
         "grab_ms_worst": g.worst.as_secs_f32() * 1000.0,
-        "encoder_busy_drops": dropped - last_dropped,
+        // A picture change starts a new encoder whose counter begins at 0 again.
+        "encoder_busy_drops": if dropped >= last_dropped { dropped - last_dropped } else { dropped },
         "units": u.units,
         "keys": u.keys,
         "kbit_s": u.bytes as f32 * 8.0 / 1000.0 / secs,

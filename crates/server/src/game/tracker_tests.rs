@@ -114,6 +114,7 @@ fn moves_go_out_on_the_kinds_interval() {
     // The position the client ends at is the encoded one: 1/4096 of a block under the real one.
     let (_, m) = item_moves[0];
     assert!((m.pos[0] - (10.0 + 20.0 * 0.05)).abs() < 1.0 / 4096.0 + 1e-9, "{:?}", m.pos);
+    assert!(item_moves.iter().all(|m| !m.1.teleport), "a relative move never asks for the snap");
     // Mobs every 3 ticks.
     assert_eq!(cow_moves, (1..=20).map(|i| i * 3).collect::<Vec<_>>());
     // The motion change at tick 25 goes out at the next interval.
@@ -136,6 +137,7 @@ fn a_far_jump_teleports_and_an_arrow_moves_from_the_first_tick() {
     let out = tick(&mut t, &[item.clone(), arrow.clone()], &players);
     let m = moved(&out, 1).into_iter().find(|m| m.id == item.id).unwrap();
     assert_eq!(m.pos, item.pos, "a teleport carries the exact position");
+    assert!(m.teleport, "and is flagged so the viewer may snap");
 }
 
 #[test]

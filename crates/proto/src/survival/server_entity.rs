@@ -13,6 +13,8 @@ pub enum ObjectData {
     Arrow { shooter: u32 },
     /// [`OBJ_FALLING_BLOCK`]: the block state.
     FallingBlock { state: u16 },
+    /// [`OBJ_XP_ORB`]: `EntityXPOrb.xpValue`.
+    XpOrb { value: u16 },
 }
 
 impl Default for ObjectData {
@@ -28,6 +30,7 @@ impl ObjectData {
             ObjectData::Item(_) => OBJ_ITEM,
             ObjectData::Arrow { .. } => OBJ_ARROW,
             ObjectData::FallingBlock { .. } => OBJ_FALLING_BLOCK,
+            ObjectData::XpOrb { .. } => OBJ_XP_ORB,
         }
     }
 }
@@ -50,6 +53,7 @@ impl SpawnObject {
             ObjectData::Item(s) => w.stack(s),
             ObjectData::Arrow { shooter } => w.u32(shooter),
             ObjectData::FallingBlock { state } => w.u16(state),
+            ObjectData::XpOrb { value } => w.u16(value),
         };
         w.done()
     }
@@ -63,6 +67,7 @@ impl SpawnObject {
             OBJ_ITEM => ObjectData::Item(r.stack()?),
             OBJ_ARROW => ObjectData::Arrow { shooter: r.u32()? },
             OBJ_FALLING_BLOCK => ObjectData::FallingBlock { state: r.u16()? },
+            OBJ_XP_ORB => ObjectData::XpOrb { value: r.u16()? },
             _ => return None,
         };
         r.end(SpawnObject { id, pos, yaw, pitch, motion, data })
@@ -124,10 +129,13 @@ pub struct EntityMove {
     pub pitch: f32,
     pub head_yaw: f32,
     pub on_ground: bool,
+    /// `SPacketEntityTeleport` (an absolute position that may snap) rather than the relative
+    /// `SPacketEntity` family, which the client always takes three ticks to reach.
+    pub teleport: bool,
 }
 
 impl EntityMove {
-    pub const SIZE: usize = 41;
+    pub const SIZE: usize = 42;
 }
 
 /// [`S_ENTITY_MOVE`]: a `u16` count, then each [`EntityMove`]. At most 65,535 are sent.
@@ -135,7 +143,7 @@ pub fn encode_entity_moves(moves: &[EntityMove]) -> Vec<u8> {
     let n = moves.len().min(u16::MAX as usize);
     let mut w = Wr::new().u16(n as u16);
     for m in &moves[..n] {
-        w = w.u32(m.id).f64x3(m.pos).f32(m.yaw).f32(m.pitch).f32(m.head_yaw).u8(m.on_ground as u8);
+        w = w.u32(m.id).f64x3(m.pos).f32(m.yaw).f32(m.pitch).f32(m.head_yaw).u8(m.on_ground as u8).u8(m.teleport as u8);
     }
     w.done()
 }
@@ -147,7 +155,7 @@ pub fn decode_entity_moves(b: &[u8]) -> Option<Vec<EntityMove>> {
         return None;
     }
     let moves = (0..n)
-        .map(|_| Some(EntityMove { id: r.u32()?, pos: r.f64x3()?, yaw: r.f32()?, pitch: r.f32()?, head_yaw: r.f32()?, on_ground: r.bool()? }))
+        .map(|_| Some(EntityMove { id: r.u32()?, pos: r.f64x3()?, yaw: r.f32()?, pitch: r.f32()?, head_yaw: r.f32()?, on_ground: r.bool()?, teleport: r.bool()? }))
         .collect::<Option<Vec<_>>>()?;
     r.end(moves)
 }
@@ -210,6 +218,54 @@ impl EntityEvent {
     pub fn decode(b: &[u8]) -> Option<EntityEvent> {
         let mut r = Rd(b);
         let m = EntityEvent { id: r.u32()?, status: r.u8()? };
+        r.end(m)
+    }
+}
+
+/// [`S_EFFECT`]: `SPacketEntityEffect`. `flags` bit 0 is ambient, bit 1 hides the particles.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntityEffect {
+    pub id: u32,
+    /// `Potion.getIdFromPotion`, 1 to 27.
+    pub effect: u8,
+    pub amplifier: u8,
+    pub duration: i32,
+    pub flags: u8,
+}
+
+impl EntityEffect {
+    pub const SIZE: usize = 11;
+    pub const AMBIENT: u8 = 1;
+    pub const HIDE_PARTICLES: u8 = 2;
+
+    pub fn encode(&self) -> Vec<u8> {
+        Wr::new().u32(self.id).u8(self.effect).u8(self.amplifier).i32(self.duration).u8(self.flags).done()
+    }
+
+    pub fn decode(b: &[u8]) -> Option<EntityEffect> {
+        let mut r = Rd(b);
+        let m = EntityEffect { id: r.u32()?, effect: r.below(28).filter(|&e| e >= 1)?, amplifier: r.u8()?, duration: r.i32()?, flags: r.u8().filter(|f| *f < 4)? };
+        r.end(m)
+    }
+}
+
+/// [`S_REMOVE_EFFECT`]: `SPacketRemoveEntityEffect`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RemoveEffect {
+    pub id: u32,
+    pub effect: u8,
+}
+
+impl RemoveEffect {
+    pub const SIZE: usize = 5;
+
+    pub fn encode(&self) -> Vec<u8> {
+        Wr::new().u32(self.id).u8(self.effect).done()
+    }
+
+    pub fn decode(b: &[u8]) -> Option<RemoveEffect> {
+        let mut r = Rd(b);
+        let m = RemoveEffect { id: r.u32()?, effect: r.below(28).filter(|&e| e >= 1)? };
         r.end(m)
     }
 }
@@ -366,6 +422,29 @@ impl BlockAction {
     pub fn decode(b: &[u8]) -> Option<BlockAction> {
         let mut r = Rd(b);
         let m = BlockAction { pos: r.i32x3()?, block: r.u16()?, a: r.u8()?, b: r.u8()? };
+        r.end(m)
+    }
+}
+
+/// [`S_WORLD_EVENT`]: `SPacketEffect` for a non-global event (`World.playEvent`), here the record
+/// events: 1010 with the record item id as `data` starts a disc at `pos`, with 0 stops it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldEvent {
+    pub event: i32,
+    pub pos: [i32; 3],
+    pub data: i32,
+}
+
+impl WorldEvent {
+    pub const SIZE: usize = 20;
+
+    pub fn encode(&self) -> Vec<u8> {
+        Wr::new().i32(self.event).i32x3(self.pos).i32(self.data).done()
+    }
+
+    pub fn decode(b: &[u8]) -> Option<WorldEvent> {
+        let mut r = Rd(b);
+        let m = WorldEvent { event: r.i32()?, pos: r.i32x3()?, data: r.i32()? };
         r.end(m)
     }
 }

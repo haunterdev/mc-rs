@@ -27,6 +27,9 @@ pub enum PopMsg {
     /// Blocks another world already settled: another player's edits, or the saved world's on
     /// joining. They join the overlay, which wins over generation and population from then on.
     Remote(Vec<((i32, i32, i32), u16)>),
+    /// One game tick of the pending tick list (flowing liquids), single player only: a server
+    /// session takes the server's ticks as remote changes. The first one turns the list on.
+    Tick,
 }
 
 /// `populate` recurses deeply through neighbour updates (falling sand, liquids).
@@ -57,6 +60,8 @@ struct Populator<'g> {
     done: Sender<Done>,
     center: Pos,
     radius: i32,
+    /// The pending tick list is on (the first [`PopMsg::Tick`]).
+    ticking: bool,
 }
 
 impl<'g> Populator<'g> {
@@ -69,6 +74,7 @@ impl<'g> Populator<'g> {
             done,
             center: (0, 0),
             radius: i32::MAX / 4,
+            ticking: false,
         }
     }
 
@@ -114,6 +120,14 @@ impl<'g> Populator<'g> {
             PopMsg::Remote(changes) => {
                 let applied = self.terrain.remote(&changes);
                 applied.is_empty() || self.done.send(Done::Edited(applied, false)).is_ok()
+            }
+            PopMsg::Tick => {
+                if !self.ticking {
+                    self.terrain.set_ticking(true);
+                    self.ticking = true;
+                }
+                let flowed = self.terrain.tick_blocks();
+                flowed.is_empty() || self.done.send(Done::Edited(flowed, false)).is_ok()
             }
         }
     }

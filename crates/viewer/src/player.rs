@@ -125,6 +125,15 @@ pub struct Player {
     pub landing: Landing,
     /// `PlayerControllerMP.currentGameType`, as the server sets it: `proto::GM_*`.
     pub game_mode: u8,
+    /// `WorldInfo.difficulty` id, as `S_DIFFICULTY` last sent it.
+    pub difficulty: u8,
+    /// `FoodStats.getFoodLevel`, as the server last sent it (`S_HEALTH`); sprinting needs more
+    /// than 6 unless the game mode allows flying.
+    pub food_level: i32,
+    /// `EntityPlayerSP.isHandActive`: a bow is being drawn (survival/bow.rs).
+    pub using_item: bool,
+    /// `EntityLivingBase.activePotionsMap`, as the server last said (survival/effects.rs).
+    pub effects: items::potion::Effects,
 }
 
 impl Deref for Player {
@@ -176,7 +185,23 @@ impl Player {
             spawned: false,
             landing: Landing { on_top: false, rise: true },
             game_mode: proto::GM_CREATIVE,
+            difficulty: 2,
+            food_level: 20,
+            using_item: false,
+            effects: items::potion::Effects::new(),
         }
+    }
+
+    /// `NetHandlerPlayClient.handleEntityVelocity` for the session's own player
+    /// (`Entity.setVelocity`): the motion becomes what the server sent, blocks a tick.
+    pub fn set_velocity(&mut self, motion: [f32; 3]) {
+        self.body.motion = DVec3::new(motion[0] as f64, motion[1] as f64, motion[2] as f64);
+    }
+
+    /// `EntityPlayerSP.onLivingUpdate`'s `flag4`: enough food to sprint, or a game mode that
+    /// allows flying.
+    pub fn can_sprint(&self) -> bool {
+        self.food_level as f32 > 6.0 || self.allow_flying()
     }
 
     /// Moves the player without interpolation or momentum (the smoke run's camera path).
@@ -209,10 +234,12 @@ impl Player {
 
     /// The `MOVEMENT_SPEED` attribute's value.
     fn speed_attribute(&self) -> f64 {
+        // Speed and Slowness are operation 2 modifiers, like the sprint boost.
+        let base = MOVEMENT_SPEED * self.effects.movement_speed_factor();
         if self.sprinting {
-            MOVEMENT_SPEED * (1.0 + SPRINT_BOOST)
+            base * (1.0 + SPRINT_BOOST)
         } else {
-            MOVEMENT_SPEED
+            base
         }
     }
 
@@ -308,6 +335,11 @@ impl Player {
     fn jump(&mut self) {
         // getJumpUpwardsMotion is the float 0.42.
         self.body.motion.y = 0.42f32 as f64;
+        // Jump Boost adds (amplifier + 1) * 0.1.
+        let boost = self.effects.jump_boost_level();
+        if boost > 0.0 {
+            self.body.motion.y += (boost * 0.1f32) as f64;
+        }
         if self.sprinting {
             let f = self.body.yaw * 0.017_453_292;
             self.body.motion.x -= (sin(f) * 0.2) as f64;
@@ -342,6 +374,8 @@ impl Player {
     /// of `EntityPlayerSP`, `EntityPlayer` and `EntityLivingBase`, then `updateSize`.
     /// DROPPED: the network updates, health, hunger, items and everything the hand already ticks.
     pub fn tick(&mut self, w: &impl BlockAccess, keys: &Keys) {
+        // EntityLivingBase.updatePotionEffects: the durations count down.
+        self.effects.tick();
         // Entity.onEntityUpdate
         self.body.prev_distance_walked_modified = self.body.distance_walked_modified;
         self.body.prev_pos = self.body.pos;
@@ -362,7 +396,13 @@ impl Player {
         let flag1 = self.input.sneak;
         let flag2 = self.input.forward >= 0.8;
         self.input.update(keys);
-        // DROPPED: the tutorial, and the item-use slowdown (no item is ever in use).
+        // DROPPED: the tutorial.
+        if self.using_item {
+            // isHandActive && !isRiding: the item-use slowdown.
+            self.input.strafe *= 0.2;
+            self.input.forward *= 0.2;
+            self.sprint_toggle_timer = 0;
+        }
         let mut flag3 = false;
         if self.auto_jump_time > 0 {
             self.auto_jump_time -= 1;
@@ -376,18 +416,18 @@ impl Player {
         self.body.push_out_of_blocks(w, x - d, y, z - d);
         self.body.push_out_of_blocks(w, x + d, y, z - d);
         self.body.push_out_of_blocks(w, x + d, y, z + d);
-        // flag4: allowFlying, so hunger never stops the sprint.
-        if self.body.on_ground && !flag1 && !flag2 && self.input.forward >= 0.8 && !self.sprinting {
+        let flag4 = self.can_sprint();
+        if self.body.on_ground && !flag1 && !flag2 && self.input.forward >= 0.8 && !self.sprinting && flag4 {
             if self.sprint_toggle_timer <= 0 && !keys.sprint {
                 self.sprint_toggle_timer = 7;
             } else {
                 self.set_sprinting(true);
             }
         }
-        if !self.sprinting && self.input.forward >= 0.8 && keys.sprint {
+        if !self.sprinting && self.input.forward >= 0.8 && flag4 && keys.sprint {
             self.set_sprinting(true);
         }
-        if self.sprinting && (self.input.forward < 0.8 || self.body.collided_horizontally) {
+        if self.sprinting && (self.input.forward < 0.8 || self.body.collided_horizontally || !flag4) {
             self.set_sprinting(false);
         }
         if self.allow_flying() {
@@ -518,6 +558,7 @@ pub fn run_ticks(
         if player.spawned {
             interact::tick(&mut *streamer, &mut ctl, &mut hand, &mut inv, &player, attack_held, use_held);
         }
+        streamer.tick_blocks();
         sky::renderer_tick(&mut view, &player, &streamer, &clock, &settings);
         if !player.spawned {
             player.spawned = streamer.info_at(floor(player.pos.x), floor(player.pos.z)).is_some();

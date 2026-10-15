@@ -70,6 +70,22 @@ pub const ITEM: Kind = Kind {
     tracker_velocity: true,
 };
 
+pub const XP_ORB: Kind = Kind {
+    // EntityList.init: register(2, "xp_orb", EntityXPOrb.class, "XPOrb").
+    id: Some(2),
+    name: "xp_orb",
+    // EntityXPOrb.<init>(world, x, y, z, value): setSize(0.5F, 0.5F).
+    width: 0.5,
+    height: 0.5,
+    eye_height: default_eye(0.5),
+    // RenderXPOrb.EXPERIENCE_ORB_TEXTURES.
+    texture: "textures/entity/experience_orb.png",
+    // EntityTracker.track: EntityXPOrb is track(entity, 64, 20, true).
+    tracker_range: 64,
+    tracker_interval: 20,
+    tracker_velocity: true,
+};
+
 pub const ARROW: Kind = Kind {
     // EntityList.init: register(10, "arrow", EntityTippedArrow.class, "Arrow").
     id: Some(10),
@@ -234,7 +250,7 @@ pub const SPIDER: Kind = Kind {
 };
 
 /// Every kind, the player first.
-pub static KINDS: [Kind; 12] = [PLAYER, ITEM, ARROW, FALLING_BLOCK, PIG, SHEEP, COW, CHICKEN, ZOMBIE, SKELETON, CREEPER, SPIDER];
+pub static KINDS: [Kind; 13] = [PLAYER, ITEM, XP_ORB, ARROW, FALLING_BLOCK, PIG, SHEEP, COW, CHICKEN, ZOMBIE, SKELETON, CREEPER, SPIDER];
 
 /// The kind with this `EntityList` id (`proto::SpawnMob::kind`).
 pub fn by_id(id: u16) -> Option<&'static Kind> {

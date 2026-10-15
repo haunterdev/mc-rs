@@ -102,9 +102,21 @@ pub fn attach(game: &mut Game, world: Arc<Mutex<World>>) {
             })
             .expect("spawn a terrain worker");
     }
+    // The saved `/difficulty` outranks server.json; either way the world holds the live id.
+    {
+        let mut w = world.lock().unwrap();
+        match w.difficulty {
+            Some(d) => game.cfg.difficulty = ["peaceful", "easy", "normal", "hard"][d.min(3) as usize].into(),
+            None => w.difficulty = Some(super::players::difficulty(game) as u8),
+        }
+    }
     let mut terrain = Terrain::new(gen);
+    // Falling blocks become entities (`falling_blocks`), not instant moves.
+    terrain.falls = Some(Vec::new());
     let edits = world.lock().unwrap().all_edits();
     terrain.remote(&edits);
+    // Flowing liquids tick from here on (sim fluids.rs); the saved edits never wake them.
+    terrain.set_ticking(true);
     game.terrain.core = Some(Core {
         terrain,
         world,
@@ -126,7 +138,7 @@ pub fn on_frame(_game: &mut Game, _id: u32, _tag: u8, _body: &[u8]) -> bool {
 }
 
 /// The players' chunks, sorted, from the last state each sent.
-fn centers(game: &Game) -> Vec<Pos> {
+pub(super) fn centers(game: &Game) -> Vec<Pos> {
     let mut c: Vec<Pos> = game
         .sessions
         .values()
@@ -152,10 +164,13 @@ pub fn tick(game: &mut Game) {
         core.terrain.insert_generated(p, chunk, |_| false);
     }
     core.populate(Instant::now() + BUDGET);
+    // WorldServer.tickUpdates: the liquids due this tick.
+    let flowed = core.terrain.tick_blocks();
     if moved || ticks % PACK_EVERY == 0 {
         core.terrain.pack_beyond(&core.centers, sim + PACK_MARGIN);
     }
     game.stats.loaded_chunks = core.terrain.world.loaded().count();
+    publish(game, flowed);
 }
 
 impl Core {
@@ -218,6 +233,9 @@ pub fn on_blocks(game: &mut Game, _id: u32, changes: &[BlockChange]) {
     let Some(core) = game.terrain.core.as_mut() else { return };
     core.terrain.remote(changes);
     core.drop_light(changes);
+    // The viewer has no tick list, so the liquids its edits touch are woken here.
+    let woke = core.terrain.wake_liquids(changes);
+    publish(game, woke);
 }
 
 /// `World.setBlockState(at, state)` by the server (flags 3, neighbour updates): every block that
@@ -226,8 +244,57 @@ pub fn on_blocks(game: &mut Game, _id: u32, changes: &[BlockChange]) {
 pub fn set_block(game: &mut Game, at: (i32, i32, i32), state: u16) -> Vec<BlockChange> {
     let Some(core) = game.terrain.core.as_mut() else { return Vec::new() };
     let changes = core.terrain.set(at, state, 3);
+    publish(game, changes.clone());
+    changes
+}
+
+/// The blocks that started to fall since the last call (`BlockFalling.checkFallable`).
+pub fn take_falls(game: &mut Game) -> Vec<sim::gravity::Fall> {
+    game.terrain.core.as_mut().map(|c| c.terrain.take_falls()).unwrap_or_default()
+}
+
+/// [`set_block`] that also returns the state each change replaced (same order), for the drops of
+/// what a neighbour update broke.
+pub fn set_block_logged(game: &mut Game, at: (i32, i32, i32), state: u16) -> (Vec<BlockChange>, Vec<u16>) {
+    set_flags(game, at, state, 3)
+}
+
+/// [`set_block_logged`] with `World.setBlockState`'s flags (1 notifies the neighbours). Every
+/// change is published whatever the flags: the viewers and edits.bin always get it.
+pub fn set_flags(game: &mut Game, at: (i32, i32, i32), state: u16, flags: i32) -> (Vec<BlockChange>, Vec<u16>) {
+    let Some(core) = game.terrain.core.as_mut() else { return (Vec::new(), Vec::new()) };
+    let (changes, olds) = core.terrain.set_logged(at, state, flags);
+    publish(game, changes.clone());
+    (changes, olds)
+}
+
+/// `f` on the population world around `at` (a tree growing), the blocks it wrote published like
+/// [`set_block`]'s. None when the chunk was never generated.
+pub fn edit_world<R>(game: &mut Game, at: (i32, i32, i32), f: impl FnOnce(&mut worldgen::populate::PopWorld<'static>) -> R) -> Option<(R, Vec<BlockChange>)> {
+    let core = game.terrain.core.as_mut()?;
+    let (out, changes) = core.terrain.edit_world(at, f)?;
+    publish(game, changes.clone());
+    Some((out, changes))
+}
+
+/// `f` on the population world for reads that need its helpers (`isRainingAt`). Nothing written
+/// here is published, and `f` must only touch held chunks.
+pub fn peek<R>(game: &mut Game, f: impl FnOnce(&mut worldgen::populate::PopWorld<'static>) -> R) -> Option<R> {
+    let core = game.terrain.core.as_mut()?;
+    Some(f(&mut core.terrain.world))
+}
+
+/// Whether section `sy` of the held chunk has storage (`ExtendedBlockStorage != NULL_BLOCK_STORAGE`).
+pub fn has_section(game: &Game, cx: i32, cz: i32, sy: usize) -> bool {
+    game.terrain.core.as_ref().and_then(|c| c.terrain.world.chunk_ref(cx, cz)).is_some_and(|c| c.sections[sy].is_some())
+}
+
+/// Blocks the server's own world wrote: to edits.bin and to every session as `S_BLOCKS`, and
+/// paintings on a block that became air come down.
+fn publish(game: &mut Game, changes: Vec<BlockChange>) {
+    let Some(core) = game.terrain.core.as_mut() else { return };
     if changes.is_empty() {
-        return changes;
+        return;
     }
     core.drop_light(&changes);
     let gone = core.world.lock().unwrap().apply(&changes);
@@ -236,7 +303,6 @@ pub fn set_block(game: &mut Game, at: (i32, i32, i32), state: u16) -> Vec<BlockC
         net::broadcast(game, None, proto::S_PAINTING, &p.encode());
     }
     super::tiles::on_changes(game, None, &changes);
-    changes
 }
 
 /// The block state at `at`: air unless its chunk is final and held, the way a client reads an
@@ -246,6 +312,56 @@ pub fn state(game: &Game, at: (i32, i32, i32)) -> u16 {
         Some(core) => core.terrain.state(at.0, at.1, at.2),
         None => worldgen::blocks::AIR,
     }
+}
+
+/// The game's terrain as the collision and liquid code reads it (`World.getBlockState` for an
+/// entity on the server).
+pub struct Blocks<'a>(pub &'a Game);
+
+impl sim::collision::BlockAccess for Blocks<'_> {
+    fn state(&self, x: i32, y: i32, z: i32) -> u16 {
+        state(self.0, (x, y, z))
+    }
+
+    fn loaded(&self, x: i32, z: i32) -> bool {
+        self.0.terrain.core.as_ref().is_some_and(|c| sim::collision::BlockAccess::loaded(&c.terrain, x, z))
+    }
+}
+
+/// The world file the terrain was attached to (game rules, spawn points).
+pub fn world(game: &Game) -> Option<Arc<Mutex<World>>> {
+    game.terrain.core.as_ref().map(|c| c.world.clone())
+}
+
+/// A boolean game rule (`GameRules.getBoolean`), `default` while no world is attached.
+pub fn rule(game: &Game, name: &str, default: bool) -> bool {
+    match world(game) {
+        Some(w) => w.lock().unwrap().rule(name).map_or(default, |v| v == "true"),
+        None => default,
+    }
+}
+
+/// `Chunk.getHeightValue` and `Chunk.getTopFilledSegment` of the column's chunk, if it is held.
+pub fn column(game: &Game, x: i32, z: i32) -> Option<(i32, i32)> {
+    let c = game.terrain.core.as_ref()?.terrain.world.chunk_ref(x >> 4, z >> 4)?;
+    Some((c.height_value(x & 15, z & 15), c.top_filled_segment()))
+}
+
+/// `World.getBiome(pos)` for a held chunk.
+pub fn biome(game: &Game, x: i32, z: i32) -> Option<&'static worldgen::biome::Biome> {
+    let w = &game.terrain.core.as_ref()?.terrain.world;
+    w.is_chunk_loaded(x >> 4, z >> 4).then(|| w.biome(worldgen::populate::Pos::new(x, 0, z)))
+}
+
+/// `World.getTopSolidOrLiquidBlock(pos)`'s y, for a held chunk.
+pub fn top_solid_or_liquid(game: &mut Game, x: i32, z: i32) -> Option<i32> {
+    let w = &mut game.terrain.core.as_mut()?.terrain.world;
+    w.is_chunk_loaded(x >> 4, z >> 4).then(|| w.top_solid_or_liquid(worldgen::populate::Pos::new(x, 0, z)).y)
+}
+
+/// The chunk has been populated (its `populate` ran, whether or not its neighbours have).
+pub fn is_populated(game: &Game, p: Pos) -> bool {
+    game.terrain.core.as_ref().is_some_and(|c| c.terrain.is_populated(p) && c.terrain.world.is_chunk_loaded(p.0, p.1))
 }
 
 /// The chunk is final and held.

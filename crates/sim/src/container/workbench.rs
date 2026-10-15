@@ -40,7 +40,14 @@ impl Container {
     /// `ContainerPlayer` always answers true.
     pub fn can_interact_with(&self, block_at_pos: u16, player_pos: [f64; 3]) -> bool {
         match self.kind {
-            ContainerKind::Player | ContainerKind::Creative => true,
+            ContainerKind::Player | ContainerKind::Creative | ContainerKind::Chest { .. } | ContainerKind::Furnace { .. } => true,
+            ContainerKind::Enchanting { pos } => {
+                if block_at_pos != block::ENCHANTING_TABLE {
+                    return false;
+                }
+                let d: f64 = (0..3).map(|i| (player_pos[i] - (pos[i] as f64 + 0.5)).powi(2)).sum();
+                d <= 64.0
+            }
             ContainerKind::Workbench { pos } => {
                 if block_at_pos != block::CRAFTING_TABLE {
                     return false;

@@ -97,14 +97,14 @@ fn stack_comparisons() {
 #[test]
 fn damage_and_breaking() {
     let mut p = ItemStack::new(item::WOODEN_PICKAXE, 1, 58);
-    assert!(!p.damage_item(1, false), "59 uses: damage 59 is the last use");
+    assert!(!p.damage_item(1, false, &mut items::JavaRandom::new(1)), "59 uses: damage 59 is the last use");
     assert_eq!(p.damage, 59);
-    assert!(p.damage_item(1, false), "damage past max breaks it");
+    assert!(p.damage_item(1, false, &mut items::JavaRandom::new(1)), "damage past max breaks it");
     assert!(p.is_empty());
     let mut q = ItemStack::new(item::WOODEN_PICKAXE, 1, 0);
-    assert!(!q.damage_item(5, true) && q.damage == 0, "creative takes no damage");
+    assert!(!q.damage_item(5, true, &mut items::JavaRandom::new(1)) && q.damage == 0, "creative takes no damage");
     let mut stick = ItemStack::of(item::STICK);
-    assert!(!stick.damage_item(1, false) && stick.damage == 0);
+    assert!(!stick.damage_item(1, false, &mut items::JavaRandom::new(1)) && stick.damage == 0);
 }
 
 #[test]

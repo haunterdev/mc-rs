@@ -63,6 +63,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         discard;
     }
 #endif
+#ifdef CRACK
+    // color(1, 1, 1, 0.5) with blendFunc(DST_COLOR, SRC_COLOR): the texel as is, 0.5 is neutral.
+    return vec4(tex.rgb, 1.0);
+#endif
     let lm = lightmap(in.uv_b);
     var rgb = tex.rgb * in.color.rgb * lm;
     let shading = env_param(P_SHADING);

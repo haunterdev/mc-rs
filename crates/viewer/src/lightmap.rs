@@ -12,7 +12,7 @@ pub fn brightness_table() -> [f32; 16] {
 
 /// `EntityRenderer.updateLightmap`: 256 ARGB colors, index `sky * 16 + block`.
 /// `sun_brightness` is `World.getSunBrightness(1.0F)`, `gamma` is `GameSettings.gammaSetting`.
-pub fn lightmap(sun_brightness: f32, gamma: f32) -> [u32; 256] {
+pub fn lightmap(sun_brightness: f32, gamma: f32, night_vision: f32) -> [u32; 256] {
     let table = brightness_table();
     let f = sun_brightness;
     let f1 = f * 0.95 + 0.05;
@@ -31,7 +31,20 @@ pub fn lightmap(sun_brightness: f32, gamma: f32) -> [u32; 256] {
         f8 = f8 * 0.96 + 0.03;
         f9 = f9 * 0.96 + 0.03;
         f10 = f10 * 0.96 + 0.03;
-        // DROPPED: boss sky darkening, the End dimension branch and night vision.
+        // Night vision lifts every channel toward full by the weakest one's headroom.
+        if night_vision > 0.0 {
+            let mut f18 = 1.0 / f8;
+            if f18 > 1.0 / f9 {
+                f18 = 1.0 / f9;
+            }
+            if f18 > 1.0 / f10 {
+                f18 = 1.0 / f10;
+            }
+            f8 = f8 * (1.0 - night_vision) + f8 * f18 * night_vision;
+            f9 = f9 * (1.0 - night_vision) + f9 * f18 * night_vision;
+            f10 = f10 * (1.0 - night_vision) + f10 * f18 * night_vision;
+        }
+        // DROPPED: boss sky darkening and the End dimension branch.
         f8 = f8.min(1.0);
         f9 = f9.min(1.0);
         f10 = f10.min(1.0);
@@ -91,7 +104,7 @@ mod tests {
 
     #[test]
     fn full_daylight_is_white_and_darkness_is_not_black() {
-        let m = lightmap(1.0, 0.0);
+        let m = lightmap(1.0, 0.0, 0.0);
         // Sky 15, block 0 at full sun: f2 = 1, f4 = 1 -> 0.99, then 0.99 * 0.96 + 0.03 = 0.9804 -> 250.
         assert_eq!(m[15 * 16], 0xFF00_0000 | 250 << 16 | 250 << 8 | 250);
         // Sky 0, block 0: 0.03 * 0.96 + 0.03 = 0.0588 -> 14.
@@ -104,18 +117,28 @@ mod tests {
 
     #[test]
     fn gamma_brightens_the_dark() {
-        let moody = lightmap(1.0, 0.0);
-        let bright = lightmap(1.0, 1.0);
+        let moody = lightmap(1.0, 0.0, 0.0);
+        let bright = lightmap(1.0, 1.0, 0.0);
         assert!((bright[5 * 16] & 255) > (moody[5 * 16] & 255));
     }
 
     #[test]
     fn bilinear_lookup_hits_texel_centers() {
-        let m = lightmap(1.0, 0.0);
+        let m = lightmap(1.0, 0.0, 0.0);
         let s = sample(&m, 0.0, 240.0);
         assert!((s[0] - 250.0 / 255.0).abs() < 1e-6);
         let half = sample(&m, 0.0, 232.0);
         let lo = (m[14 * 16] >> 16 & 255) as f32 / 255.0;
         assert!((half[0] - (lo + 250.0 / 255.0) / 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn night_vision_brightens_a_dark_cell() {
+        let off = lightmap(0.0, 0.0, 0.0);
+        let on = lightmap(0.0, 0.0, 1.0);
+        let dark = 0;
+        let lum = |c: u32| (c >> 16 & 255) + (c >> 8 & 255) + (c & 255);
+        assert!(lum(on[dark]) > lum(off[dark]), "{:x} vs {:x}", on[dark], off[dark]);
+        assert_eq!(lightmap(0.0, 0.0, 0.0), off);
     }
 }

@@ -234,6 +234,27 @@ impl CloseWindow {
     }
 }
 
+/// [`V_ENCHANT`]: `CPacketEnchantItem`, the window and the button (0 to 2) pressed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EnchantItem {
+    pub window: u8,
+    pub button: u8,
+}
+
+impl EnchantItem {
+    pub const SIZE: usize = 2;
+
+    pub fn encode(&self) -> Vec<u8> {
+        Wr::new().u8(self.window).u8(self.button).done()
+    }
+
+    pub fn decode(b: &[u8]) -> Option<EnchantItem> {
+        let mut r = Rd(b);
+        let m = EnchantItem { window: r.u8()?, button: r.u8().filter(|&b| b < 3)? };
+        r.end(m)
+    }
+}
+
 /// [`V_CREATIVE_SLOT`]: `CPacketCreativeInventoryAction`, `ContainerPlayer` numbering, -1 throws
 /// the stack out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -312,6 +333,8 @@ mod tests {
         let click = Click { window: 3, slot: -999, button: 1, mode: CLICK_QUICK_CRAFT, action: 512 };
         trip(&click, Click::encode, Click::decode, Some(Click::SIZE));
         trip(&CloseWindow { window: 100 }, CloseWindow::encode, CloseWindow::decode, Some(CloseWindow::SIZE));
+        trip(&EnchantItem { window: 5, button: 2 }, EnchantItem::encode, EnchantItem::decode, Some(EnchantItem::SIZE));
+        assert_eq!(EnchantItem::decode(&[5, 3]), None);
         trip(&CreativeSlot { slot: 36, stack: COBBLE }, CreativeSlot::encode, CreativeSlot::decode, Some(CreativeSlot::SIZE));
         trip(&CreativeSlot { slot: -1, stack: WireStack::EMPTY }, CreativeSlot::encode, CreativeSlot::decode, Some(CreativeSlot::SIZE));
         let sign = SignText { pos: [-4, 70, 12], lines: ["Hello".into(), String::new(), "\u{e9}t\u{e9}".into(), "x".repeat(SIGN_LINE_MAX)] };

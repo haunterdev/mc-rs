@@ -512,7 +512,7 @@ pub fn finish_loads(
                 ((p.pos[0], p.pos[1], p.pos[2]), face, vec_of(Facing::VALUES[p.up as usize % 6]), p.w as i32, p.h as i32, p.uid, false)
             }
         };
-        let material = materials.add(EntityMaterial { env: env.image.clone(), skin: first, light: Vec4::new(0.0, 240.0, 0.0, 0.0) });
+        let material = materials.add(EntityMaterial::new(env.image.clone(), first));
         info!("media: hung {id} ({pw}x{ph} px, {w}x{h} blocks) at {pos:?} {face:?}");
         let picture = Picture { uid, media: id, pos, face, up, w, h, material: material.clone(), show };
         if share {

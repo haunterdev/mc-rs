@@ -13,18 +13,20 @@ pub struct Health {
     pub air: i16,
     /// [`HEALTH_BURNING`].
     pub flags: u8,
+    /// `EntityLivingBase.getAbsorptionAmount`.
+    pub absorption: f32,
 }
 
 impl Health {
-    pub const SIZE: usize = 12;
+    pub const SIZE: usize = 16;
 
     pub fn encode(&self) -> Vec<u8> {
-        Wr::new().f32(self.health).u8(self.food).f32(self.saturation).i16(self.air).u8(self.flags).done()
+        Wr::new().f32(self.health).u8(self.food).f32(self.saturation).i16(self.air).u8(self.flags).f32(self.absorption).done()
     }
 
     pub fn decode(b: &[u8]) -> Option<Health> {
         let mut r = Rd(b);
-        let m = Health { health: r.f32()?, food: r.u8()?, saturation: r.f32()?, air: r.i16()?, flags: r.u8()? };
+        let m = Health { health: r.f32()?, food: r.u8()?, saturation: r.f32()?, air: r.i16()?, flags: r.u8()?, absorption: r.f32()? };
         r.end(m)
     }
 }
@@ -128,7 +130,7 @@ impl Confirm {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OpenWindow {
     pub window: u8,
-    /// [`WK_CRAFTING_TABLE`], [`WK_CHEST`] or [`WK_FURNACE`].
+    /// [`WK_CRAFTING_TABLE`], [`WK_CHEST`], [`WK_FURNACE`] or [`WK_ENCHANTING`].
     pub kind: u8,
     pub rows: u8,
     pub pos: [i32; 3],
@@ -144,7 +146,7 @@ impl OpenWindow {
         let mut r = Rd(b);
         let m = OpenWindow {
             window: r.u8().filter(|&w| w != WINDOW_INVENTORY)?,
-            kind: r.u8().filter(|k| (WK_CRAFTING_TABLE..=WK_FURNACE).contains(k))?,
+            kind: r.u8().filter(|k| (WK_CRAFTING_TABLE..=WK_ENCHANTING).contains(k))?,
             rows: r.u8()?,
             pos: r.i32x3()?,
             title: r.str()?,
@@ -182,7 +184,7 @@ mod tests {
 
     #[test]
     fn server_messages_round_trip() {
-        let health = Health { health: 13.5, food: 17, saturation: 2.25, air: 300, flags: HEALTH_BURNING };
+        let health = Health { health: 13.5, food: 17, saturation: 2.25, air: 300, flags: HEALTH_BURNING, absorption: 4.0 };
         trip(&health, Health::encode, Health::decode, Some(Health::SIZE));
         trip(&Xp { bar: 0.75, level: 30, total: 1395 }, Xp::encode, Xp::decode, Some(Xp::SIZE));
         trip(&Death { message: "xy was slain by Zombie".into() }, Death::encode, Death::decode, None);
@@ -202,11 +204,13 @@ mod tests {
         trip(&arrow, SpawnObject::encode, SpawnObject::decode, Some(49 + 4));
         let sand = SpawnObject { data: ObjectData::FallingBlock { state: 12 << 4 }, ..base };
         trip(&sand, SpawnObject::encode, SpawnObject::decode, Some(49 + 2));
+        let orb = SpawnObject { data: ObjectData::XpOrb { value: 2477 }, ..base };
+        trip(&orb, SpawnObject::encode, SpawnObject::decode, Some(49 + 2));
         let mob = SpawnMob { id: 1_000_001, kind: MOB_SHEEP, pos: [8.5, 70.0, 8.5], yaw: 10.0, pitch: 0.0, head_yaw: 20.0, motion: [0.0, -0.08, 0.0], meta: SHEEP };
         trip(&mob, SpawnMob::encode, SpawnMob::decode, Some(SpawnMob::SIZE));
         let moves = vec![
-            EntityMove { id: 1_000_001, pos: [8.6, 70.0, 8.4], yaw: 12.0, pitch: 0.0, head_yaw: 25.0, on_ground: true },
-            EntityMove { id: 2, pos: [-100.25, 80.5, 3.0], yaw: -90.0, pitch: 30.0, head_yaw: -90.0, on_ground: false },
+            EntityMove { id: 1_000_001, pos: [8.6, 70.0, 8.4], yaw: 12.0, pitch: 0.0, head_yaw: 25.0, on_ground: true, teleport: false },
+            EntityMove { id: 2, pos: [-100.25, 80.5, 3.0], yaw: -90.0, pitch: 30.0, head_yaw: -90.0, on_ground: false, teleport: true },
         ];
         trip(&moves, |m| encode_entity_moves(m), decode_entity_moves, Some(2 + 2 * EntityMove::SIZE));
         trip(&vec![], |m: &Vec<EntityMove>| encode_entity_moves(m), decode_entity_moves, Some(2));
@@ -223,8 +227,11 @@ mod tests {
         trip(&BreakAnim { breaker: 2, pos: [1, 2, 3], stage: -1 }, BreakAnim::encode, BreakAnim::decode, Some(BreakAnim::SIZE));
         trip(&BreakAnim { breaker: 2, pos: [1, 2, 3], stage: 9 }, BreakAnim::encode, BreakAnim::decode, Some(BreakAnim::SIZE));
         trip(&BlockAction { pos: [5, 64, 5], block: 54, a: 1, b: 2 }, BlockAction::encode, BlockAction::decode, Some(BlockAction::SIZE));
+        trip(&WorldEvent { event: 1010, pos: [5, 64, -5], data: 2257 }, WorldEvent::encode, WorldEvent::decode, Some(WorldEvent::SIZE));
         let sound = Sound { name: "entity.zombie.ambient".into(), category: 5, pos: [1.0, 2.0, 3.0], volume: 1.0, pitch: 0.9 };
         trip(&sound, Sound::encode, Sound::decode, None);
+        trip(&EntityEffect { id: 1, effect: 10, amplifier: 1, duration: 100, flags: EntityEffect::AMBIENT }, EntityEffect::encode, EntityEffect::decode, Some(EntityEffect::SIZE));
+        trip(&RemoveEffect { id: 1, effect: 10 }, RemoveEffect::encode, RemoveEffect::decode, Some(RemoveEffect::SIZE));
         trip(&Explosion { pos: [0.0, 64.0, 0.0], strength: 3.0, motion: [0.5, 0.25, 0.0] }, Explosion::encode, Explosion::decode, Some(Explosion::SIZE));
     }
 }

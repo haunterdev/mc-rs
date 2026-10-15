@@ -19,14 +19,15 @@ use crate::item_render::{gui_matrix, ItemMaterials, ItemMeshes};
 use crate::material::ItemMaterial;
 use crate::players::Font;
 
-/// `textures/gui/container/creative_inventory/tabs.png` and the three `tab_*.png` backgrounds
-/// (`Tab::background()` order: items, item_search, inventory), as GUI (sRGB) images.
+/// `textures/gui/container/creative_inventory/tabs.png` and the backgrounds: the three `tab_*.png`
+/// (`Tab::background()` order: items, item_search, inventory), then `container/inventory.png` and
+/// `container/crafting_table.png`, `generic_54.png` and `furnace.png`, as GUI (sRGB) images.
 /// `empty_slots` is the empty armor and shield slot sprites side by side
 /// ([`EMPTY_SLOT_NAMES`]), 16 pixels each.
 #[derive(Resource)]
 pub struct ContainerImages {
     pub tabs: Handle<Image>,
-    pub backgrounds: [Handle<Image>; 3],
+    pub backgrounds: [Handle<Image>; 8],
     pub empty_slots: Handle<Image>,
 }
 
@@ -44,6 +45,7 @@ enum Look {
     Background,
     Font,
     EmptySlots,
+    Galactic,
 }
 
 /// The bands, back to front: (depth, look).
@@ -62,8 +64,12 @@ const BANDS: [(f32, Look); BAND_COUNT] = [
     (500.0, Look::Plain),      // TIP_BACK
     (510.0, Look::Font),       // TIP_TEXT
     (5.5, Look::EmptySlots),   // EMPTY_SLOTS
+    (5.2, Look::Galactic),     // GALACTIC
 ];
-pub const BAND_COUNT: usize = 14;
+pub const BAND_COUNT: usize = 15;
+
+/// The clue text of the enchanting table in the standard galactic alphabet.
+pub const GALACTIC: usize = 14;
 /// `drawDefaultBackground`
 pub const BACKDROP: usize = 0;
 /// The tabs behind the background.
@@ -179,7 +185,21 @@ impl Quads {
         end as i32
     }
 
-    fn mesh(&self) -> Mesh {
+    /// `GlStateManager.scale(k, k, k)` around the origin, for the vertices added since
+    /// `from` (a [`Quads::vertices`] count taken before drawing).
+    pub fn scale_from(&mut self, from: usize, k: f32) {
+        for p in &mut self.pos[from..] {
+            p[0] *= k;
+            p[1] *= k;
+        }
+    }
+
+    /// How many vertices the band holds.
+    pub fn vertices(&self) -> usize {
+        self.pos.len()
+    }
+
+    pub fn mesh(&self) -> Mesh {
         Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos.clone())
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv.clone())
@@ -237,6 +257,47 @@ pub struct Frame {
     pub icons: Vec<Icon>,
     /// Which of [`ContainerImages::backgrounds`] the background band shows.
     pub background: usize,
+    /// `GuiInventory.drawEntityOnScreen(posX, posY, scale, mouseX, mouseY, player)`: the player
+    /// model this frame, drawn by `players::inventory_model`.
+    pub player_model: Option<PlayerModel>,
+}
+
+/// The arguments of `GuiInventory.drawEntityOnScreen`: the feet at GUI pixel (`x`, `y`), `scale`
+/// GUI pixels per block, and the `mouseX` and `mouseY` it turns toward (the model's centre minus
+/// the pointer, as the callers pass them).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerModel {
+    pub x: i32,
+    pub y: i32,
+    pub scale: i32,
+    pub mouse_x: f32,
+    pub mouse_y: f32,
+}
+
+/// `renderItemOverlayIntoGUI`'s stack size (or `text`), bottom right of the slot at (x, y) with a
+/// shadow. Shared by the container screens and the hotbar.
+pub fn stack_count(q: &mut Quads, font: &Font, stack: &ItemStack, x: i32, y: i32, text: Option<(String, u32)>) {
+    if stack.is_empty() {
+        return;
+    }
+    if stack.get_count() != 1 || text.is_some() {
+        let (s, color) = text.unwrap_or_else(|| (stack.get_count().to_string(), 0xFFFFFF));
+        let w = string_width(font, &s, false);
+        q.text(font, &s, x + 19 - 2 - w, y + 6 + 3, color, true, false);
+    }
+}
+
+/// `renderItemOverlayIntoGUI`'s durability bar of a damaged item.
+pub fn durability_bar(q: &mut Quads, stack: &ItemStack, x: i32, y: i32) {
+    if stack.is_empty() || !stack.is_item_damaged() {
+        return;
+    }
+    let (f, f1) = (stack.get_metadata() as f32, stack.get_max_damage() as f32);
+    let f2 = ((f1 - f) / f1).max(0.0);
+    let i = (13.0 - f * 13.0 / f1).round() as i32;
+    let j = hsv_to_rgb(f2 / 3.0, 1.0, 1.0);
+    q.rect(x + 2, y + 13, x + 2 + 13, y + 13 + 2, 0xFF00_0000);
+    q.rect(x + 2, y + 13, x + 2 + i, y + 13 + 1, 0xFF00_0000 | j);
 }
 
 impl Frame {
@@ -247,29 +308,15 @@ impl Frame {
             *b = Quads::default();
         }
         self.icons.clear();
+        self.player_model = None;
     }
 
     /// `RenderItem.renderItemOverlayIntoGUI`: the stack size (or `text`) bottom right with a
     /// shadow, and the durability bar of a damaged item. DROPPED: the cooldown overlay
     /// (`CooldownTracker`), which no item here starts.
     pub fn overlay(&mut self, font: &Font, stack: &ItemStack, x: i32, y: i32, text: Option<(String, u32)>, text_band: usize, bar_band: usize) {
-        if stack.is_empty() {
-            return;
-        }
-        if stack.get_count() != 1 || text.is_some() {
-            let (s, color) = text.unwrap_or_else(|| (stack.get_count().to_string(), 0xFFFFFF));
-            let w = string_width(font, &s, false);
-            self.bands[text_band].text(font, &s, x + 19 - 2 - w, y + 6 + 3, color, true, false);
-        }
-        if stack.is_item_damaged() {
-            let (f, f1) = (stack.get_metadata() as f32, stack.get_max_damage() as f32);
-            let f2 = ((f1 - f) / f1).max(0.0);
-            let i = (13.0 - f * 13.0 / f1).round() as i32;
-            let j = hsv_to_rgb(f2 / 3.0, 1.0, 1.0);
-            let q = &mut self.bands[bar_band];
-            q.rect(x + 2, y + 13, x + 2 + 13, y + 13 + 2, 0xFF00_0000);
-            q.rect(x + 2, y + 13, x + 2 + i, y + 13 + 1, 0xFF00_0000 | j);
-        }
+        stack_count(&mut self.bands[text_band], font, stack, x, y, text);
+        durability_bar(&mut self.bands[bar_band], stack, x, y);
     }
 
     /// `GuiScreen.drawHoveringText(lines, x, y)` on a `width` x `height` screen. Each line is
@@ -340,18 +387,26 @@ pub struct Band(usize);
 #[derive(Component)]
 pub struct ScreenIcon(usize);
 
+/// The glint pass over `ScreenIcon(.0)`.
+#[derive(Component)]
+pub struct ScreenGlint(usize);
+
 /// The band materials.
 #[derive(Resource)]
 pub struct BandMaterials {
     plain: Handle<StandardMaterial>,
     tabs: Handle<StandardMaterial>,
-    backgrounds: [Handle<StandardMaterial>; 3],
+    backgrounds: [Handle<StandardMaterial>; 8],
+    galactic: Handle<StandardMaterial>,
     font: Handle<StandardMaterial>,
     empty_slots: Handle<StandardMaterial>,
 }
 
 /// Enough for a full container, the tab icons and the cursor stack.
 const ICONS: usize = 96;
+/// Frames the icon pool is kept warm after start, and where it is parked meanwhile.
+const WARM_FRAMES: u32 = 240;
+const PARKED: Vec3 = Vec3::new(-100_000.0, 0.0, 0.0);
 
 /// Makes the band materials and spawns the hidden bands and icons. Runs after Startup, once
 /// main.rs's `setup` has made the images.
@@ -359,6 +414,7 @@ pub fn spawn_screen(
     mut commands: Commands,
     images: Res<ContainerImages>,
     font: Res<Font>,
+    galactic: Option<Res<super::enchanting::Galactic>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -378,6 +434,7 @@ pub fn spawn_screen(
         backgrounds: images.backgrounds.clone().map(|b| material(Some(b))),
         font: material(Some(font.image.clone())),
         empty_slots: material(Some(images.empty_slots.clone())),
+        galactic: material(Some(galactic.map_or_else(|| font.image.clone(), |g| g.0.image.clone()))),
     };
     for (i, &(z, look)) in BANDS.iter().enumerate() {
         let mut q = Quads::default();
@@ -388,6 +445,7 @@ pub fn spawn_screen(
             Look::Background => m.backgrounds[0].clone(),
             Look::Font => m.font.clone(),
             Look::EmptySlots => m.empty_slots.clone(),
+            Look::Galactic => m.galactic.clone(),
         };
         commands.spawn((
             Band(i),
@@ -409,6 +467,15 @@ pub fn spawn_screen(
             Transform::default(),
             Visibility::Hidden,
         ));
+        commands.spawn((
+            ScreenGlint(i),
+            Mesh3d::default(),
+            MeshMaterial3d::<ItemMaterial>::default(),
+            RenderLayers::layer(3),
+            NoFrustumCulling,
+            Transform::default(),
+            Visibility::Hidden,
+        ));
     }
     commands.insert_resource(m);
 }
@@ -422,13 +489,54 @@ pub fn present(
     item_materials: Res<ItemMaterials>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut shown: Local<bool>,
+    mut frames: Local<u32>,
     mut bands: Query<(&Band, &Mesh3d, &mut MeshMaterial3d<StandardMaterial>, &mut Visibility), Without<ScreenIcon>>,
-    mut icons: Query<(&ScreenIcon, &mut Mesh3d, &mut MeshMaterial3d<ItemMaterial>, &mut Transform, &mut Visibility), Without<Band>>,
+    mut icons: Query<(&ScreenIcon, &mut Mesh3d, &mut MeshMaterial3d<ItemMaterial>, &mut Transform, &mut Visibility), (Without<Band>, Without<ScreenGlint>)>,
+    mut glints: Query<(&ScreenGlint, &mut Mesh3d, &mut MeshMaterial3d<ItemMaterial>, &mut Transform, &mut Visibility), (Without<Band>, Without<ScreenIcon>)>,
 ) {
     let Some(band_materials) = band_materials else { return };
-    if !frame.open && !*shown {
+    // The first open showed no items for a split second, because the icon pool's meshes,
+    // materials and pipelines were first used on the frame the screen opened. For the first
+    // WARM_FRAMES frames every icon and glint is drawn parked off screen with a real flat or 3D
+    // mesh and its material, so the renderer has them ready before any screen opens.
+    if *frames < WARM_FRAMES && !frame.open {
+        *frames += 1;
+        let flat = items.0.values().find(|m| !m.gui3d);
+        let block = items.0.values().find(|m| m.gui3d);
+        let parked = Transform::from_translation(PARKED);
+        let (flat_material, block_material) = (&item_materials.gui_flat, &item_materials.gui_3d);
+        for (n, (_, mut mesh, mut material, mut transform, mut visibility)) in icons.iter_mut().enumerate() {
+            let (item, m) = if n % 2 == 0 { (flat, flat_material) } else { (block, block_material) };
+            if let Some(item) = item {
+                mesh.0 = item.mesh.clone();
+                material.0 = m.clone();
+                *transform = parked;
+                *visibility = Visibility::Inherited;
+            }
+        }
+        for (n, (_, mut mesh, mut material, mut transform, mut visibility)) in glints.iter_mut().enumerate() {
+            if let Some(item) = [flat, block][n % 2] {
+                mesh.0 = item.mesh.clone();
+                material.0 = item_materials.glint_of(item.gui3d, false).clone();
+                *transform = parked;
+                *visibility = Visibility::Inherited;
+            }
+        }
         return;
     }
+    if !frame.open && !*shown {
+        if *frames == WARM_FRAMES {
+            *frames += 1;
+            for (_, _, _, _, mut visibility) in &mut icons {
+                *visibility = Visibility::Hidden;
+            }
+            for (_, _, _, _, mut visibility) in &mut glints {
+                *visibility = Visibility::Hidden;
+            }
+        }
+        return;
+    }
+    *frames = WARM_FRAMES + 1;
     *shown = frame.open;
     for (band, mesh, mut material, mut visibility) in &mut bands {
         let q = &frame.bands[band.0];
@@ -438,10 +546,26 @@ pub fn present(
         }
         let _ = meshes.insert(&mesh.0, q.mesh());
         if band.0 == BACKGROUND {
-            let m = &band_materials.backgrounds[frame.background.min(2)];
+            let m = &band_materials.backgrounds[frame.background.min(7)];
             if material.0 != *m {
                 material.0 = m.clone();
             }
+        }
+        *visibility = Visibility::Inherited;
+    }
+    for (glint, mut mesh, mut material, mut transform, mut visibility) in &mut glints {
+        let shown = frame.icons.get(glint.0).filter(|i| frame.open && i.stack.has_effect());
+        let Some((i, item)) = shown.and_then(|i| model_key(&i.stack).and_then(|k| items.0.get(&k)).map(|item| (i, item))) else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        *transform = Transform::from_matrix(Mat4::from_translation(Vec3::Z * i.z) * gui_matrix(i.x, i.y, item.gui));
+        if mesh.0 != item.mesh {
+            mesh.0 = item.mesh.clone();
+        }
+        let m = item_materials.glint_of(item.gui3d, false);
+        if material.0 != *m {
+            material.0 = m.clone();
         }
         *visibility = Visibility::Inherited;
     }

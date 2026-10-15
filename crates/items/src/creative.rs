@@ -282,7 +282,7 @@ pub fn get_sub_items(d: &ItemDef, tab: Tab, out: &mut Vec<ItemStack>) {
 /// `ItemEnchantedBook.getSubItems`: on SEARCH every typed enchantment at every level, on a tab
 /// with relevant types each matching enchantment at its max level.
 fn enchanted_books(tab: Tab, out: &mut Vec<ItemStack>) {
-    let book = |e: &EnchDef, level: i32| ItemStack::of(item::ENCHANTED_BOOK).with_tag(Tag::StoredEnchant { id: e.id, level: level as u8 });
+    let book = |e: &EnchDef, level: i32| ItemStack::of(item::ENCHANTED_BOOK).with_ench(crate::stack::EnchList::from_pairs([(e.id, level as u8)]));
     if tab == Tab::Search {
         for e in ENCHANTMENTS.iter().filter(|e| e.ty.is_some()) {
             out.extend((e.min..=e.max).map(|l| book(e, l)));

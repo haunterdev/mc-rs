@@ -100,7 +100,7 @@ pub fn on_block_added(w: &mut PopWorld, p: Pos, s: u16) {
     let b = blocks::block_of(s);
     if b == id::FLOWING_WATER || b == id::FLOWING_LAVA {
         if !check_for_mixing(w, p, s) {
-            w.schedule_update(p, b);
+            w.schedule_update_in(p, b, tick_rate(b));
         }
     } else {
         check_for_mixing(w, p, s);
@@ -121,9 +121,7 @@ pub fn neighbor_changed(w: &mut PopWorld, p: Pos, s: u16) {
 fn update_liquid(w: &mut PopWorld, p: Pos, s: u16) {
     let flowing = flowing_of(blocks::block_of(s));
     w.set(p, blocks::state(flowing, s & 15), 2);
-    // tickRate is the delay; only the immediate branch of updateBlockTick runs.
-    let _ = tick_rate(flowing);
-    w.schedule_update(p, flowing);
+    w.schedule_update_in(p, flowing, tick_rate(flowing));
 }
 
 /// `updateTick`. `BlockStaticLiquid.updateTick` (lava setting fire) never runs: nothing schedules a
@@ -132,6 +130,19 @@ pub fn update_tick(w: &mut PopWorld, p: Pos, s: u16, mut rand: TickRand) {
     let b = blocks::block_of(s);
     if b == id::FLOWING_WATER || b == id::FLOWING_LAVA {
         dynamic_update_tick(w, p, s, &mut rand);
+    }
+}
+
+/// Not a vanilla method: the server takes a viewer's edits raw (the viewer already ran their
+/// neighbour updates and has no tick list), so each liquid at or beside such a change gets what
+/// its own world would have given it. A flowing block is scheduled as `onBlockAdded` does; a still
+/// block beside the change (`beside` set) gets `neighborChanged`.
+pub fn wake(w: &mut PopWorld, p: Pos, s: u16, beside: bool) {
+    let b = blocks::block_of(s);
+    if b == id::FLOWING_WATER || b == id::FLOWING_LAVA {
+        w.schedule_update_in(p, b, tick_rate(b));
+    } else if beside && (b == id::WATER || b == id::LAVA) {
+        neighbor_changed(w, p, s);
     }
 }
 
@@ -182,8 +193,7 @@ fn dynamic_update_tick(w: &mut PopWorld, p: Pos, mut st: u16, rand: &mut TickRan
             } else {
                 st = blocks::state(this, i1 as u16);
                 w.set(p, st, 2);
-                let _ = k;
-                w.schedule_update(p, this);
+                w.schedule_update_in(p, this, k);
                 w.notify_neighbors(p, this);
             }
         }

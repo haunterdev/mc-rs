@@ -18,9 +18,12 @@ mod chest;
 mod crafting;
 pub mod creative;
 pub mod draw;
+pub mod enchanting;
 mod furnace;
 mod inventory;
 pub mod slots;
+pub mod switcher;
+pub mod window;
 
 pub use draw::ContainerImages;
 use draw::Frame;
@@ -37,9 +40,12 @@ pub fn plugin(app: &mut App) {
     chest::plugin(app);
     crafting::plugin(app);
     creative::plugin(app);
+    enchanting::plugin(app);
     furnace::plugin(app);
     inventory::plugin(app);
     slots::plugin(app);
+    switcher::plugin(app);
+    window::plugin(app);
 }
 
 /// `lang/en_us.lang` from the jar: tab titles, item names and tooltips.

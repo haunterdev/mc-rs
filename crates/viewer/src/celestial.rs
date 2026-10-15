@@ -135,6 +135,10 @@ pub struct FogInput {
     pub brightness: f32,
     /// The view entity's interpolated feet y (`lastTickPosY + (posY - lastTickPosY) * pt`).
     pub feet_y: f64,
+    /// The Blindness effect's remaining ticks, when active.
+    pub blindness: Option<i32>,
+    /// `getNightVisionBrightness`, 0 without the effect.
+    pub night_vision: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,7 +185,10 @@ pub fn fog_color(angle: f32, i: &FogInput) -> [f32; 3] {
     b *= i.brightness;
     // WorldProvider.getVoidFogYFactor for the default world type.
     let mut d1 = i.feet_y * 0.03125;
-    // DROPPED: blindness.
+    // Blindness: the void factor gives way to a fade over the last second.
+    if let Some(t) = i.blindness {
+        d1 = if t < 20 { d1 * (1.0 - t as f32 / 20.0) as f64 } else { 0.0 };
+    }
     if d1 < 1.0 {
         if d1 < 0.0 {
             d1 = 0.0;
@@ -191,7 +198,20 @@ pub fn fog_color(angle: f32, i: &FogInput) -> [f32; 3] {
         g = (g as f64 * d1) as f32;
         b = (b as f64 * d1) as f32;
     }
-    // DROPPED: boss fog, night vision and anaglyph.
+    if i.night_vision > 0.0 {
+        let mut f4 = 1.0 / r;
+        if f4 > 1.0 / g {
+            f4 = 1.0 / g;
+        }
+        if f4 > 1.0 / b {
+            f4 = 1.0 / b;
+        }
+        let d = i.night_vision;
+        r = r * (1.0 - d) + r * f4 * d;
+        g = g * (1.0 - d) + g * f4 * d;
+        b = b * (1.0 - d) + b * f4 * d;
+    }
+    // DROPPED: boss fog and anaglyph.
     [r, g, b]
 }
 
@@ -213,6 +233,21 @@ pub fn linear_fog(render_distance: u32, start_coords: i32) -> (f32, f32) {
         (0.0, f)
     } else {
         (f * 0.75, f)
+    }
+}
+
+/// `EntityRenderer.setupFog` with Blindness: linear fog 5 blocks out, easing to the far plane over
+/// the last second. The sky (`start_coords` -1) starts at the eye and ends at 0.8 of it.
+pub fn blindness_fog(render_distance: u32, start_coords: i32, ticks: i32) -> (f32, f32) {
+    let far = (render_distance * 16) as f32;
+    let mut f = 5.0f32;
+    if ticks < 20 {
+        f = 5.0 + (far - 5.0) * (1.0 - ticks as f32 / 20.0);
+    }
+    if start_coords == -1 {
+        (0.0, f * 0.8)
+    } else {
+        (f * 0.25, f)
     }
 }
 
@@ -273,6 +308,8 @@ mod tests {
             fluid: Fluid::None,
             brightness: 1.0,
             feet_y: 70.0,
+            blindness: None,
+            night_vision: 0.0,
         };
         let f = fog_color(noon, &input);
         // Between the provider fog color (0.7529, 0.8471, 1.0) and the sky color.

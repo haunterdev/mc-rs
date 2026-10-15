@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use super::behavior;
 use super::props::material;
 use super::state::{self, Facing, Pos};
+use super::ticks::TickList;
 use crate::biome::{self, Biome};
 use crate::blocks::{self, id};
 use crate::generator::ChunkGenerator;
@@ -296,6 +297,12 @@ pub struct PopWorld<'g> {
     /// When set, every block write lands here in order: the viewer's edits read back what a
     /// break or place changed (plants losing their support and the like).
     pub changes: Option<Vec<(Pos, u16)>>,
+    /// Beside `changes`, when set: the state each write replaced, in the same order (the server
+    /// drops what a neighbour update broke from the old state).
+    pub olds: Option<Vec<u16>>,
+    /// `WorldServer`'s pending tick list, while a `sim::terrain::Terrain` lends it; None during
+    /// population, so ticks scheduled there are dropped.
+    pub ticks: Option<TickList>,
 }
 
 impl<'g> PopWorld<'g> {
@@ -313,6 +320,8 @@ impl<'g> PopWorld<'g> {
             statics,
             trace: None,
             changes: None,
+            olds: None,
+            ticks: None,
         }
     }
 
@@ -472,6 +481,9 @@ impl<'g> PopWorld<'g> {
         c.sections[si].as_mut().unwrap().blocks[sidx(i, j, k)] = s;
         if let Some(log) = self.changes.as_mut() {
             log.push((p, s));
+            if let Some(o) = self.olds.as_mut() {
+                o.push(old);
+            }
         }
         if block1 != block {
             behavior::break_block(self, p, old);
@@ -530,6 +542,24 @@ impl<'g> PopWorld<'g> {
             }
         }
         // DROPPED: the pending tick list; nothing ticks after population in the harness.
+    }
+
+    /// `World.scheduleUpdate(pos, block, delay)` as `WorldServer.updateBlockTick(pos, block, delay,
+    /// 0)`: the immediate branch as [`Self::schedule_update`], else the entry goes on the pending
+    /// list when the world holds one.
+    pub fn schedule_update_in(&mut self, p: Pos, block: u16, delay: i32) {
+        let def = block << 4;
+        let mut delay = delay;
+        if self.immediate && state::mat(def) != material::AIR {
+            if state::requires_updates(def) {
+                self.schedule_update(p, block);
+                return;
+            }
+            delay = 1;
+        }
+        if let Some(t) = self.ticks.as_mut() {
+            t.schedule((p.x, p.y, p.z), block, delay, 0);
+        }
     }
 
     /// `WorldServer.immediateBlockTick(pos, state, random)`

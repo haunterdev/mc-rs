@@ -122,6 +122,7 @@ pub fn bounding_box(w: &impl BlockAccess, s: u16, p: BlockPos) -> Aabb {
             Facing::North => TORCH_NORTH,
             _ => TORCH_STANDING,
         },
+        b if worldgen::blocks::is_door(b) => crate::door::bounding_box(|x, y, z| w.state(x, y, z), s, p.0, p.1, p.2),
         _ => FULL,
     }
 }

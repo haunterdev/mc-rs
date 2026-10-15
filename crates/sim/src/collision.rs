@@ -223,8 +223,15 @@ pub fn collision_box(state: u16) -> Option<Aabb> {
 }
 
 /// `IBlockState.addCollisionBoxToList`: the block's box at `pos` when it meets `entity_box`.
-fn add_collision_boxes(state: u16, x: i32, y: i32, z: i32, entity_box: &Aabb, out: &mut Vec<Aabb>) {
-    let local = if state >> 4 == id::WATERLILY { Some(LILY_PAD) } else { collision_box(state) };
+/// A door's box reads the other half (`BlockDoor.getBoundingBox` over `getActualState`).
+fn add_collision_boxes(w: &impl BlockAccess, state: u16, x: i32, y: i32, z: i32, entity_box: &Aabb, out: &mut Vec<Aabb>) {
+    let local = if state >> 4 == id::WATERLILY {
+        Some(LILY_PAD)
+    } else if worldgen::blocks::is_door(state >> 4) {
+        Some(crate::door::bounding_box(|x, y, z| w.state(x, y, z), state, x, y, z))
+    } else {
+        collision_box(state)
+    };
     if let Some(b) = local {
         let b = b.offset(x as f64, y as f64, z as f64);
         if entity_box.intersects(&b) {
@@ -252,7 +259,7 @@ fn collision_boxes(w: &impl BlockAccess, bb: &Aabb, first_only: bool, out: &mut 
             }
             for i2 in k..l {
                 if !flag2 && !flag3 || i2 != l - 1 {
-                    add_collision_boxes(w.state(k1, i2, l1), k1, i2, l1, bb, out);
+                    add_collision_boxes(w, w.state(k1, i2, l1), k1, i2, l1, bb, out);
                     if first_only && !out.is_empty() {
                         return true;
                     }

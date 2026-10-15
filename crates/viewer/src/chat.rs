@@ -7,7 +7,8 @@
 //!
 //! What it shows is the server page's JSON: `chat` messages, from a player (`<name> text`) or
 //! from the server (joins and leaves in yellow, command answers in the color they name).
-//! DROPPED: the chat history (up and down), scrolling, the player list (Tab), clickable text.
+//! The player list (Tab) is tablist.rs.
+//! DROPPED: the chat history (up and down), scrolling, clickable text.
 
 use std::collections::VecDeque;
 use std::time::Instant;
@@ -104,7 +105,17 @@ fn formatting(name: &str) -> Option<Color> {
     Some(Color::srgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
 }
 
+/// The top UI camera (order 4): the chat lines and, over them, the screens that cover the HUD
+/// (the options menu, the sign editor). `GuiIngame` draws before `currentScreen.drawScreen`, so a
+/// screen goes over the hearts and the hotbar icons the item camera (order 2) draws.
+#[derive(Resource, Clone, Copy)]
+pub struct ScreenCamera(pub Entity);
+
 pub fn spawn_chat(mut commands: Commands) {
+    // The chat is the top layer. The default UI camera is the hand camera (order 1), under
+    // the item camera (order 2) that draws the hotbar's icons, so the chat gets a camera over both.
+    let camera = commands.spawn((Camera2d, Camera { order: 4, clear_color: ClearColorConfig::None, ..default() })).id();
+    commands.insert_resource(ScreenCamera(camera));
     let rows: Vec<Entity> = (0..ROWS)
         .map(|i| {
             commands
@@ -113,10 +124,11 @@ pub fn spawn_chat(mut commands: Commands) {
         })
         .collect();
     commands
-        .spawn((ChatBox, Node { position_type: PositionType::Absolute, flex_direction: FlexDirection::Column, ..default() }, GlobalZIndex(5)))
+        .spawn((ChatBox, UiTargetCamera(camera), Node { position_type: PositionType::Absolute, flex_direction: FlexDirection::Column, ..default() }, GlobalZIndex(5)))
         .add_children(&rows);
     commands.spawn((
         ChatInput,
+        UiTargetCamera(camera),
         Text::new(""),
         TextFont::default(),
         TextColor(WHITE),
@@ -127,11 +139,13 @@ pub fn spawn_chat(mut commands: Commands) {
     ));
 }
 
-/// The server's chat into the lines.
-pub fn receive(joined: Res<Joined>, mut chat: ResMut<Chat>) {
+/// The server's chat into the lines, its player list into [`crate::tablist::TabList`].
+pub fn receive(joined: Res<Joined>, mut chat: ResMut<Chat>, mut tab: ResMut<crate::tablist::TabList>) {
     while let Ok(json) = joined.texts.try_recv() {
         if let Some((text, color)) = line_of(&json) {
             chat.push(text, color);
+        } else if let Some(names) = crate::tablist::players_of(&json) {
+            tab.set(names);
         }
     }
 }

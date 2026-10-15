@@ -1,7 +1,7 @@
 //! `BlockModelShapes`' state mappers for the blocks the generator and population place: the
 //! blockstate file and variant key a state renders with.
 
-use worldgen::blocks::{dye, id};
+use worldgen::blocks::{dye, id, is_door};
 
 /// `BlockOldLog.EnumType` / `BlockPlanks.EnumType` names, by meta.
 pub(crate) const WOODS: [&str; 6] = ["oak", "spruce", "birch", "jungle", "acacia", "dark_oak"];
@@ -173,8 +173,113 @@ pub fn blockstate_of(s: u16, flag: bool) -> Option<(String, String)> {
         id::DOUBLE_WOODEN_SLAB => (format!("{}_double_slab", WOODS.get(meta & 7)?), "normal".into()),
         id::PURPUR_SLAB => ("purpur_slab".into(), format!("{},variant=default", slab_half(meta))),
         id::PURPUR_DOUBLE_SLAB => ("purpur_double_slab".into(), "variant=default".into()),
+        // BlockDoor, ignoring POWERED: the mesher's `actual_state` hands over FACING and OPEN in
+        // the lower bits for both halves, HALF as bit 8, and HINGE (right) as `flag`.
+        b if is_door(b) => {
+            let file = match b {
+                id::WOODEN_DOOR => "wooden_door",
+                id::IRON_DOOR => "iron_door",
+                id::SPRUCE_DOOR => "spruce_door",
+                id::BIRCH_DOOR => "birch_door",
+                id::JUNGLE_DOOR => "jungle_door",
+                id::ACACIA_DOOR => "acacia_door",
+                _ => "dark_oak_door",
+            };
+            let facing = ["east", "south", "west", "north"][meta & 3];
+            let half = if meta & 8 != 0 { "upper" } else { "lower" };
+            let hinge = if flag { "right" } else { "left" };
+            (file.into(), format!("facing={facing},half={half},hinge={hinge},open={}", meta & 4 != 0))
+        }
         _ => return None,
     })
+}
+
+/// `DefaultStateMapper` for a state [`blockstate_of`] does not map: the registry path as the file
+/// and the property string (`"normal"` for none) as the key. A block with its own state mapper
+/// asks for a variant its file lacks, and the caller skips it.
+pub fn default_blockstate(s: u16) -> Option<(String, String)> {
+    if sim::states::render_type(s) != sim::states::RenderType::Model {
+        return None;
+    }
+    let (block, meta) = (s >> 4, (s & 15) as usize);
+    // The common mappers that rename the file after a variant and drop the rest.
+    let colored = |suffix: &str| Some((format!("{}_{suffix}", dye::NAMES[meta]), "normal".to_string()));
+    match block {
+        // BlockSapling: TYPE + "_sapling"; the jar's blockstates are keyed by STAGE (meta & 8), so
+        // the key is `stage=0` or `stage=1`, not "normal" (which left every sapling unbaked and
+        // invisible). `EnumType.byMetadata` maps 6 and 7 to oak.
+        id::SAPLING => {
+            return Some((format!("{}_sapling", WOODS.get(meta & 7).unwrap_or(&WOODS[0])), format!("stage={}", meta >> 3)))
+        }
+        // BlockQuartz: a custom mapper by VARIANT.
+        // BlockModelShapes' DEADBUSH mapper is always "dead_bush".
+        32 => return Some(("dead_bush".into(), "normal".into())),
+        155 => {
+            return Some(match sim::states::properties(s) {
+                "variant=chiseled" => ("chiseled_quartz_block".into(), "normal".into()),
+                "variant=lines_y" => ("quartz_column".into(), "axis=y".into()),
+                "variant=lines_x" => ("quartz_column".into(), "axis=x".into()),
+                "variant=lines_z" => ("quartz_column".into(), "axis=z".into()),
+                _ => ("quartz_block".into(), "normal".into()),
+            })
+        }
+        35 => return colored("wool"),
+        95 => return colored("stained_glass"),
+        171 => return colored("carpet"),
+        251 => return colored("concrete"),
+        252 => return colored("concrete_powder"),
+        _ => {}
+    }
+    let file = sim::states::block_name(block)?;
+    let props = sim::states::properties(s);
+    // BlockModelShapes.registerBlocks: `withName(prop).withSuffix(..)` renames the file after a
+    // property's value, `ignore(..)` drops properties from the key.
+    let (name_prop, suffix) = named_by(block).unwrap_or(("", ""));
+    let ignored = ignored_props(block);
+    let mut file = file.to_string();
+    let mut key = Vec::new();
+    for pair in props.split(',').filter(|p| !p.is_empty()) {
+        let (n, v) = pair.split_once('=')?;
+        if n == name_prop {
+            file = format!("{v}{suffix}");
+        } else if !ignored.contains(&n) {
+            key.push(pair);
+        }
+    }
+    Some((file, if key.is_empty() { "normal".into() } else { key.join(",") }))
+}
+
+/// The blocks whose mapper is `withName(property).withSuffix(suffix)`: the file is the property's
+/// value plus the suffix.
+fn named_by(block: u16) -> Option<(&'static str, &'static str)> {
+    Some(match block {
+        1 | 12 | 98 | 168 => ("variant", ""),
+        24 | 31 | 37 | 38 | 179 => ("type", ""),
+        97 => ("variant", "_monster_egg"),
+        139 => ("variant", "_wall"),
+        125 => ("variant", "_double_slab"),
+        126 | 182 => ("variant", "_slab"),
+        160 => ("color", "_stained_glass_pane"),
+        _ => return None,
+    })
+}
+
+/// The properties a mapper's `ignore(..)` leaves out of the variant key.
+fn ignored_props(block: u16) -> &'static [&'static str] {
+    match block {
+        // JUKEBOX, TNT, FIRE, REDSTONE_WIRE, DISPENSER, DROPPER, HOPPER, FLOWER_POT
+        84 => &["has_record"],
+        46 => &["explode"],
+        51 => &["age"],
+        55 => &["power"],
+        23 | 158 => &["triggered"],
+        154 => &["enabled"],
+        140 => &["legacy_data"],
+        // The fence gates and doors: POWERED.
+        107 | 183..=187 | 64 | 71 | 193..=197 => &["powered"],
+        132 => &["disarmed", "powered"],
+        _ => &[],
+    }
 }
 
 /// `BlockSlab.HALF` (meta & 8) as a variant key.
@@ -185,6 +290,81 @@ fn slab_half(meta: usize) -> String {
 /// `BlockStoneSlab.SEAMLESS` (meta & 8): the double slab's variant.
 fn seamless(meta: usize) -> String {
     (if meta & 8 != 0 { "all" } else { "normal" }).into()
+}
+
+/// `getActualState` connection bits the mesher hands a multipart model beside the state: the four
+/// horizontal sides (fence, pane, bars, wall, fire, chorus plant), then UP and DOWN. Redstone wire
+/// packs its four sides two bits each ([`WIRE_SIDE`], [`WIRE_UP`]); the brewing stand's bits 0 to 2
+/// are `has_bottle_0` to `has_bottle_2`.
+pub const NORTH: u16 = 1;
+pub const EAST: u16 = 2;
+pub const SOUTH: u16 = 4;
+pub const WEST: u16 = 8;
+pub const UP: u16 = 16;
+pub const DOWN: u16 = 32;
+/// `BlockRedstoneWire.EnumAttachPosition.SIDE` / `UP` in a wire side's two bits (NONE is 0).
+pub const WIRE_SIDE: u16 = 1;
+pub const WIRE_UP: u16 = 2;
+
+/// The blocks whose blockstate file is `multipart`: fire, redstone wire, the fences, iron bars,
+/// the glass panes, the brewing stand, the walls and the chorus plant.
+pub fn is_multipart_block(block: u16) -> bool {
+    matches!(block, 51 | 55 | 85 | 101 | 102 | 113 | 117 | 139 | 160 | 188..=192 | 199)
+}
+
+/// The multipart blockstate file of a state of [`is_multipart_block`].
+pub fn multipart_file(s: u16) -> Option<String> {
+    let (block, meta) = (s >> 4, (s & 15) as usize);
+    Some(
+        match block {
+            51 => "fire",
+            55 => "redstone_wire",
+            85 => "fence",
+            101 => "iron_bars",
+            102 => "glass_pane",
+            113 => "nether_brick_fence",
+            117 => "brewing_stand",
+            // BlockWall: withName(VARIANT).withSuffix("_wall"); EnumType.byMetadata maps an
+            // unknown meta to cobblestone.
+            139 => {
+                if meta == 1 {
+                    "mossy_cobblestone_wall"
+                } else {
+                    "cobblestone_wall"
+                }
+            }
+            // BlockStainedGlassPane: withName(COLOR).withSuffix("_stained_glass_pane").
+            160 => return Some(format!("{}_stained_glass_pane", dye::NAMES[meta])),
+            188 => "spruce_fence",
+            189 => "birch_fence",
+            190 => "jungle_fence",
+            191 => "dark_oak_fence",
+            192 => "acacia_fence",
+            199 => "chorus_plant",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+/// The property names and values a multipart block has for connection bits `mask`, as the
+/// `when` conditions read them.
+pub fn multipart_props(block: u16, mask: u16) -> Vec<(&'static str, &'static str)> {
+    let tf = |bit: u16| if mask & bit != 0 { "true" } else { "false" };
+    let sides = [("north", NORTH), ("east", EAST), ("south", SOUTH), ("west", WEST)];
+    match block {
+        // BlockRedstoneWire: NORTH, EAST, SOUTH, WEST are EnumAttachPosition (POWER is not a
+        // condition of the file).
+        55 => ["north", "east", "south", "west"]
+            .into_iter()
+            .enumerate()
+            .map(|(i, n)| (n, ["none", "side", "up"][((mask >> (2 * i)) & 3).min(2) as usize]))
+            .collect(),
+        117 => vec![("has_bottle_0", tf(1)), ("has_bottle_1", tf(2)), ("has_bottle_2", tf(4))],
+        199 => sides.iter().map(|&(n, b)| (n, tf(b))).chain([("up", tf(UP)), ("down", tf(DOWN))]).collect(),
+        51 | 139 => sides.iter().map(|&(n, b)| (n, tf(b))).chain([("up", tf(UP))]).collect(),
+        _ => sides.iter().map(|&(n, b)| (n, tf(b))).collect(),
+    }
 }
 
 /// Every state with a model that generation, population or the player can place, in the forms
@@ -253,6 +433,9 @@ pub fn generated_states() -> Vec<u16> {
         }
     }
     v.extend((0..6).chain(8..14).map(|m| state(id::DOUBLE_PLANT, m)));
+    for b in [id::WOODEN_DOOR, id::IRON_DOOR, id::SPRUCE_DOOR, id::BIRCH_DOOR, id::JUNGLE_DOOR, id::ACACIA_DOOR, id::DARK_OAK_DOOR] {
+        v.extend((0..16).map(|m| state(b, m)));
+    }
     v
 }
 
@@ -285,5 +468,8 @@ mod tests {
         assert_eq!(k(id::STONEBRICK, 3, false), ("chiseled_stonebrick".into(), "normal".into()));
         assert!(blockstate_of(state(id::STONEBRICK, 4), false).is_none());
         assert!(blockstate_of(state(id::CHEST, 2), false).is_none());
+        // Doors: lower meta 1 faces south; the upper half carries the lower bits after actual_state.
+        assert_eq!(k(id::WOODEN_DOOR, 1, false), ("wooden_door".into(), "facing=south,half=lower,hinge=left,open=false".into()));
+        assert_eq!(k(id::DARK_OAK_DOOR, 8 | 4 | 3, true), ("dark_oak_door".into(), "facing=north,half=upper,hinge=right,open=true".into()));
     }
 }

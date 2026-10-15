@@ -116,10 +116,12 @@ pub struct GuiWidgets(pub Handle<Image>);
 pub enum HotbarPart {
     Bar,
     Selection,
+    /// `GuiIngame.renderHotbar`: the off hand's slot, to the left of the bar.
+    Offhand,
 }
 
 pub fn spawn_hotbar(mut commands: Commands, widgets: Res<GuiWidgets>) {
-    for (part, z) in [(HotbarPart::Bar, 0), (HotbarPart::Selection, 1)] {
+    for (part, z) in [(HotbarPart::Bar, 0), (HotbarPart::Selection, 1), (HotbarPart::Offhand, 0)] {
         commands.spawn((
             part,
             ImageNode::new(widgets.0.clone()),
@@ -143,12 +145,16 @@ pub fn update_hotbar(
     let sh = (h as f64 / k as f64).ceil() as i32;
     let unit = k as f32 / window.scale_factor();
     let i = sw / 2;
+    // The off hand is drawn on the left for a right-handed player (`getPrimaryHand().opposite()`).
+    let offhand = !inv.get_stack_in_slot(40).is_empty();
     for (part, mut node, mut image, mut visibility) in &mut parts {
         let (x, y, u, v, width, height) = match part {
             HotbarPart::Bar => (i - 91, sh - 22, 0, 0, 182, 22),
             HotbarPart::Selection => (i - 91 - 1 + inv.current_item as i32 * 20, sh - 22 - 1, 0, 22, 24, 22),
+            HotbarPart::Offhand => (i - 91 - 29, sh - 23, 24, 22, 29, 24),
         };
-        *visibility = if hide.0 { Visibility::Hidden } else { Visibility::Inherited };
+        let shown = !hide.0 && (*part != HotbarPart::Offhand || offhand);
+        *visibility = if shown { Visibility::Inherited } else { Visibility::Hidden };
         node.left = px(x as f32 * unit);
         node.top = px(y as f32 * unit);
         node.width = px(width as f32 * unit);

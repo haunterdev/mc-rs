@@ -10,8 +10,11 @@ path = "src/main.rs"
 
 [dependencies]
 paths = { path = "../paths" }
+items = { path = "../items" }
+jar = { path = "../jar" }
 proto = { path = "../proto" }
 sim = { path = "../sim" }
+glam = "0.32"
 worldgen = { path = "../worldgen" }
 crossbeam-channel = "0.5"
 argon2 = "0.5"

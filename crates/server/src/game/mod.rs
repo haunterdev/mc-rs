@@ -17,8 +17,18 @@
 // The hooks and helpers are what the later tasks call; most are empty until then.
 #![allow(dead_code)]
 
+pub mod addons;
+pub mod armor;
+pub mod beds;
+pub mod doors;
+pub mod effects;
+pub mod blockticks;
 pub mod damage;
+pub mod explosion;
+pub mod farming;
+pub mod food;
 pub mod items;
+pub mod jukebox;
 pub mod mining;
 pub mod mobs;
 pub mod net;
@@ -28,14 +38,45 @@ pub mod players;
 pub mod terrain;
 pub mod tiles;
 pub mod tracker;
+pub mod use_item;
+pub mod use_on;
 pub mod windows;
+pub mod xp;
+pub mod falling_blocks;
+pub mod xp_orbs;
 
 #[cfg(test)]
 pub mod testing;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod players_tests;
+#[cfg(test)]
 mod tiles_tests;
+#[cfg(test)]
+mod tiles_t8_tests;
+#[cfg(test)]
+mod use_on_tests;
+#[cfg(test)]
+mod farming_tests;
+#[cfg(test)]
+mod armor_tests;
+#[cfg(test)]
+mod use_item_tests;
+#[cfg(test)]
+mod beds_tests;
+#[cfg(test)]
+mod doors_tests;
+#[cfg(test)]
+mod progression_tests;
+#[cfg(test)]
+mod xp_tests;
+#[cfg(test)]
+mod falling_blocks_tests;
+#[cfg(test)]
+mod enchant_tests;
+#[cfg(test)]
+mod effects_tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -70,6 +111,14 @@ pub enum GameMsg {
     Blocks { id: u32, changes: Vec<BlockChange> },
     GameMode { id: u32, mode: u8 },
     Kill { id: u32 },
+    /// `/effect` on a player.
+    Potion { id: u32, op: crate::commands::PotionOp },
+    /// `/summon`: a mob of this kind at this position.
+    Summon { kind: &'static sim::kinds::Kind, pos: [f64; 3] },
+    /// `/difficulty`: the id 0 to 3.
+    Difficulty { id: u8 },
+    /// A command moved the player (`/tp`, `/spawn`).
+    Teleport { id: u32 },
     /// Write every module's file now and answer on `done` (a backup is about to copy them).
     Save { done: std::sync::mpsc::Sender<()> },
     Shutdown,
@@ -99,6 +148,8 @@ pub struct TickStats {
     pub frames: u64,
     /// Frames no module took.
     pub frames_unhandled: u64,
+    /// Unhandled frames by tag, so the tick line names what no module took.
+    pub unhandled_tags: std::collections::BTreeMap<u8, u64>,
     /// Ticks dropped because the loop fell more than [`MAX_BEHIND`] behind.
     pub dropped_ticks: u64,
 }
@@ -138,7 +189,11 @@ pub const MODULES: &[Module] = &[
     module!(players),
     module!(damage),
     module!(mining),
+    module!(blockticks),
     module!(windows),
+    module!(use_on),
+    module!(use_item),
+    module!(beds),
     module!(items),
     module!(mobs),
     module!(tiles),
@@ -150,13 +205,18 @@ pub const MODULES: &[Module] = &[
 /// autosave.
 pub const TICK_ORDER: &[(&str, fn(&mut Game))] = &[
     ("terrain", terrain::tick),
+    ("blockticks", blockticks::tick),
     ("players", players::tick),
     ("damage", damage::tick),
     ("mining", mining::tick),
+    ("use_item", use_item::tick),
     ("windows", windows::tick),
+    ("beds", beds::tick),
     ("items", items::tick),
+    ("falling_blocks", falling_blocks::tick),
+    ("xp_orbs", xp_orbs::tick),
     ("mobs", mobs::tick),
-    ("spawning", mobs::spawn),
+    ("spawning", mobs::spawn_step),
     ("tiles", tiles::tick),
     ("tracker", tracker::tick),
     ("playerdata", playerdata::tick),
@@ -178,10 +238,17 @@ pub struct Game {
     pub damage: damage::State,
     pub playerdata: playerdata::State,
     pub items: items::State,
+    pub xp_orbs: xp_orbs::State,
+    pub falling: falling_blocks::State,
     pub mining: mining::State,
+    pub blockticks: blockticks::State,
     pub windows: windows::State,
+    pub beds: beds::State,
+    pub use_item: use_item::State,
     pub tiles: tiles::State,
     pub mobs: mobs::State,
+    /// The addons switched on and their settings (`addons/`).
+    pub addons: addons::State,
     pub tracker: tracker::State,
     pub persist: persist::State,
     /// Set by `Shutdown`, or when every sender is gone.
@@ -241,10 +308,16 @@ impl Game {
             damage: Default::default(),
             playerdata: Default::default(),
             items: Default::default(),
+            xp_orbs: Default::default(),
+            falling: Default::default(),
             mining: Default::default(),
+            blockticks: Default::default(),
             windows: Default::default(),
+            beds: Default::default(),
+            use_item: Default::default(),
             tiles: Default::default(),
             mobs: Default::default(),
+            addons: Default::default(),
             tracker: Default::default(),
             persist: Default::default(),
             stopping: false,
@@ -252,6 +325,8 @@ impl Game {
             log,
             tick_ms: Vec::with_capacity(LOG_EVERY as usize),
         };
+        // Before the saved mobs load: `mobs::spawn` runs the addons' hooks on each.
+        g.addons = addons::State::load(&g.cfg, &g.dir);
         persist::on_start(&mut g);
         g
     }
@@ -345,6 +420,7 @@ impl Game {
                 }
                 if !taken {
                     self.stats.frames_unhandled += 1;
+                    *self.stats.unhandled_tags.entry(tag).or_default() += 1;
                 }
             }
             GameMsg::State { id, state } => {
@@ -360,18 +436,41 @@ impl Game {
                 if !self.sessions.contains_key(&id) {
                     return;
                 }
+                mining::before_blocks(self, &changes);
                 terrain::on_blocks(self, id, &changes);
                 mining::on_blocks(self, id, &changes);
                 tiles::on_changes(self, Some(id), &changes);
+            }
+            GameMsg::Difficulty { id } => {
+                self.cfg.difficulty = ["peaceful", "easy", "normal", "hard"][id.min(3) as usize].into();
             }
             GameMsg::GameMode { id, mode } => {
                 let Some(s) = self.sessions.get_mut(&id) else { return };
                 s.mode = mode;
                 players::on_game_mode(self, id, mode);
             }
+            GameMsg::Potion { id, op } => {
+                if self.players.players.contains_key(&id) {
+                    match op {
+                        crate::commands::PotionOp::Add(e) => effects::add(self, id, e),
+                        crate::commands::PotionOp::Remove(e) => effects::remove(self, id, e),
+                        crate::commands::PotionOp::Clear => {
+                            effects::clear(self, id);
+                        }
+                    }
+                }
+            }
             GameMsg::Kill { id } => {
                 if self.sessions.contains_key(&id) {
                     damage::on_kill(self, id);
+                }
+            }
+            GameMsg::Summon { kind, pos } => {
+                mobs::summon(self, kind, pos);
+            }
+            GameMsg::Teleport { id } => {
+                if self.sessions.contains_key(&id) {
+                    players::on_teleport(self, id);
                 }
             }
             GameMsg::Save { done } => {
@@ -410,6 +509,7 @@ impl Game {
             "dig_mismatches": s.dig_mismatches,
             "frames": s.frames,
             "frames_unhandled": s.frames_unhandled,
+            "unhandled_tags": s.unhandled_tags.iter().map(|(t, n)| (t.to_string(), *n)).collect::<std::collections::BTreeMap<_, _>>(),
             "dropped_ticks": s.dropped_ticks,
         });
         (self.log)(line);
@@ -417,6 +517,7 @@ impl Game {
         self.stats.dig_mismatches = 0;
         self.stats.frames = 0;
         self.stats.frames_unhandled = 0;
+        self.stats.unhandled_tags.clear();
         self.stats.dropped_ticks = 0;
         ms.clear();
         self.tick_ms = ms;

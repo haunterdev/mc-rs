@@ -154,6 +154,21 @@ pub fn generate_mipmap_data(levels: u32, width: u32, level0: &[u32], extra: u32)
     out
 }
 
+/// `RenderGlobal.destroyBlockIcons`: `textures/blocks/destroy_stage_0..9`, in the block array for
+/// the crack overlay (survival/crack.rs).
+pub const DESTROY_SPRITES: [&str; 10] = [
+    "blocks/destroy_stage_0",
+    "blocks/destroy_stage_1",
+    "blocks/destroy_stage_2",
+    "blocks/destroy_stage_3",
+    "blocks/destroy_stage_4",
+    "blocks/destroy_stage_5",
+    "blocks/destroy_stage_6",
+    "blocks/destroy_stage_7",
+    "blocks/destroy_stage_8",
+    "blocks/destroy_stage_9",
+];
+
 /// One sprite: its frames in display order (level 0 each) and the ticks each is shown for.
 pub struct Sprite {
     pub width: u32,

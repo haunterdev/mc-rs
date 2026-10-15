@@ -26,6 +26,8 @@ pub fn on_block_added(w: &mut PopWorld, p: Pos, s: u16) {
         id::TORCH => {
             torch_check_for_drop(w, p, s);
         }
+        // BlockFarmland.onBlockAdded
+        id::FARMLAND => farmland_turn_to_dirt_if_covered(w, p),
         // DROPPED: BlockPumpkin.trySpawnGolem. Population never builds the snow or iron block
         // pattern under a pumpkin, so the match always fails.
         _ => {}
@@ -58,7 +60,15 @@ pub fn neighbor_changed(w: &mut PopWorld, p: Pos, s: u16, _block: u16, _from: Po
         | id::BROWN_MUSHROOM
         | id::RED_MUSHROOM
         | id::WATERLILY
-        | id::DOUBLE_PLANT => bush_check_and_drop_block(w, p, s),
+        | id::DOUBLE_PLANT
+        | id::WHEAT
+        | id::CARROTS
+        | id::POTATOES
+        | id::BEETROOTS
+        | id::PUMPKIN_STEM
+        | id::MELON_STEM => bush_check_and_drop_block(w, p, s),
+        // BlockFarmland.neighborChanged
+        id::FARMLAND => farmland_turn_to_dirt_if_covered(w, p),
         id::REEDS => {
             reed_check_for_drop(w, p, s);
         }
@@ -103,7 +113,38 @@ pub fn neighbor_changed(w: &mut PopWorld, p: Pos, s: u16, _block: u16, _from: Po
                 w.set_air(p);
             }
         }
+        b if blocks::is_door(b) => door_neighbor_changed(w, p, s),
         _ => {}
+    }
+}
+
+/// `BlockDoor.neighborChanged`: a half without its other half goes, and so does a door with no
+/// solid top under it.
+/// DROPPED: the redstone half (`isBlockPowered`, POWERED and OPEN following it, the sound); no
+/// block here gives power.
+fn door_neighbor_changed(w: &mut PopWorld, p: Pos, s: u16) {
+    let b = block_of(s);
+    if s & 8 != 0 {
+        if block_of(w.get(p.down())) != b {
+            w.set_air(p);
+        }
+        return;
+    }
+    let mut broke = false;
+    let above = w.get(p.up());
+    if block_of(above) != b {
+        w.set_air(p);
+        broke = true;
+    }
+    if !state::is_top_solid(w.get(p.down())) {
+        w.set_air(p);
+        broke = true;
+        if block_of(above) == b {
+            w.set_air(p.up());
+        }
+    }
+    if broke {
+        drop_block_as_item(w, p, s);
     }
 }
 
@@ -133,7 +174,7 @@ pub fn update_tick(w: &mut PopWorld, p: Pos, s: u16, rand: TickRand) {
 // ---- BlockFalling ----
 
 /// `BlockFalling.canFallThrough`
-fn can_fall_through(s: u16) -> bool {
+pub fn can_fall_through(s: u16) -> bool {
     let m = state::mat(s);
     block_of(s) == id::FIRE || m == material::AIR || m == material::WATER || m == material::LAVA
 }
@@ -142,10 +183,11 @@ fn can_fall_through(s: u16) -> bool {
 fn falling_check_fallable(w: &mut PopWorld, p: Pos, s: u16) {
     let down = p.down();
     if (w.is_air(down) || can_fall_through(w.get(down))) && p.y >= 0 {
-        // Ticks only run during population, where fallInstantly is set, so vanilla always takes
-        // the instant branch.
-        debug_assert!(w.fall_instantly);
-        // DROPPED: the EntityFallingBlock branch (fallInstantly is false).
+        // The EntityFallingBlock branch (fallInstantly is false, outside population) is
+        // `sim::gravity`, which the terrain runs after every edit.
+        if !w.fall_instantly {
+            return;
+        }
         w.set_air(p);
         let mut bp = p.down();
         while (w.is_air(bp) || can_fall_through(w.get(bp))) && bp.y > 0 {
@@ -170,6 +212,8 @@ pub fn can_sustain_bush(block: u16, below: u16) -> bool {
         }
         id::BROWN_MUSHROOM | id::RED_MUSHROOM => state::is_full_block(below),
         id::WATERLILY => b == id::WATER || state::mat(below) == material::ICE,
+        // BlockCrops.canSustainBush, BlockStem.canSustainBush
+        id::WHEAT | id::CARROTS | id::POTATOES | id::BEETROOTS | id::PUMPKIN_STEM | id::MELON_STEM => b == id::FARMLAND,
         _ => b == id::GRASS || b == id::DIRT || b == id::FARMLAND,
     }
 }
@@ -268,6 +312,10 @@ pub fn can_place_block_at(w: &mut PopWorld, p: Pos, block: u16) -> bool {
         id::STANDING_SIGN | id::WALL_SIGN => !has_invalid_neighbor(w, p) && base_can_place(w, p),
         // BlockTorch.canPlaceBlockAt: any facing but DOWN.
         id::TORCH => TORCH_FACINGS.iter().any(|&f| torch_can_place_at(w.get(p.offset(f.opposite())), f)),
+        // BlockDoor.canPlaceBlockAt: below 255, on a solid top, room for both halves.
+        b if blocks::is_door(b) => {
+            p.y < 255 && state::is_top_solid(w.get(p.down())) && base_can_place(w, p) && base_can_place(w, p.up())
+        }
         _ => base_can_place(w, p),
     }
 }
@@ -381,6 +429,15 @@ fn bush_check_and_drop_block(w: &mut PopWorld, p: Pos, s: u16) {
     if !can_block_stay(w, p, s) {
         drop_block_as_item(w, p, s);
         w.set(p, blocks::AIR, 3);
+    }
+}
+
+/// `BlockFarmland.neighborChanged` and `onBlockAdded`: a solid block on top turns it to dirt
+/// (`turnToDirt`).
+/// DROPPED: lifting the entities standing in the cell above (`setPositionAndUpdate`).
+fn farmland_turn_to_dirt_if_covered(w: &mut PopWorld, p: Pos) {
+    if state::mat_solid(w.get(p.up())) {
+        w.set3(p, blocks::DIRT);
     }
 }
 

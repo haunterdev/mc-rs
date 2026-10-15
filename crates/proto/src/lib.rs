@@ -85,6 +85,8 @@ pub const S_TIME: u8 = 120;
 pub const S_TELEPORT: u8 = 121;
 /// The session player's game mode, one byte: [`GM_SURVIVAL`] to [`GM_SPECTATOR`].
 pub const S_GAMEMODE: u8 = 122;
+/// `SPacketServerDifficulty`: the world's difficulty, one byte 0 (peaceful) to 3 (hard). Sent on join and after `/difficulty`.
+pub const S_DIFFICULTY: u8 = 123;
 
 /// `GameType` ids, as `/gamemode 0..3` names them.
 pub const GM_SURVIVAL: u8 = 0;
@@ -265,12 +267,25 @@ pub struct PlayerState {
     pub flags: u8,
     /// Counts arm swings (wrapping), so a receiver starts one per step.
     pub swings: u8,
-    /// The held block state (`id << 4 | meta`), 0 for an empty hand.
+    /// The held block state (`id << 4 | meta`), 0 for an empty hand or an item that places no
+    /// block.
     pub held: u16,
+    /// The held stack's item id, 0 for an empty hand, so any item shows in the hand. A state from
+    /// a build before these fields is 36 bytes long and decodes with 0 here.
+    pub held_item: u16,
+    /// The held stack's metadata (`ItemStack.getMetadata`).
+    pub held_meta: u16,
+    /// The off hand stack's item id, 0 for an empty hand (`LayerHeldItem`'s left arm).
+    pub held_item_off: u16,
+    /// The off hand stack's metadata.
+    pub held_meta_off: u16,
 }
 
 impl PlayerState {
-    pub const SIZE: usize = 36;
+    pub const SIZE: usize = 44;
+    /// The length before the held item fields, still accepted (a build of 40 bytes decodes with 0
+    /// in the off hand fields).
+    pub const MIN_SIZE: usize = 36;
 
     pub fn encode(&self) -> [u8; Self::SIZE] {
         let mut b = [0u8; Self::SIZE];
@@ -282,22 +297,31 @@ impl PlayerState {
         b[32] = self.flags;
         b[33] = self.swings;
         b[34..36].copy_from_slice(&self.held.to_le_bytes());
+        b[36..38].copy_from_slice(&self.held_item.to_le_bytes());
+        b[38..40].copy_from_slice(&self.held_meta.to_le_bytes());
+        b[40..42].copy_from_slice(&self.held_item_off.to_le_bytes());
+        b[42..44].copy_from_slice(&self.held_meta_off.to_le_bytes());
         b
     }
 
     pub fn decode(b: &[u8]) -> Option<PlayerState> {
-        if b.len() < Self::SIZE {
+        if b.len() < Self::MIN_SIZE {
             return None;
         }
         let f64_at = |i: usize| f64::from_le_bytes(b[i..i + 8].try_into().unwrap());
         let f32_at = |i: usize| f32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        let u16_at = |i: usize| if b.len() >= i + 2 { u16::from_le_bytes([b[i], b[i + 1]]) } else { 0 };
         let s = PlayerState {
             pos: [f64_at(0), f64_at(8), f64_at(16)],
             yaw: f32_at(24),
             pitch: f32_at(28),
             flags: b[32],
             swings: b[33],
-            held: u16::from_le_bytes([b[34], b[35]]),
+            held: u16_at(34),
+            held_item: u16_at(36),
+            held_meta: u16_at(38),
+            held_item_off: u16_at(40),
+            held_meta_off: u16_at(42),
         };
         (s.pos.iter().all(|v| v.is_finite()) && s.yaw.is_finite() && s.pitch.is_finite()).then_some(s)
     }
@@ -595,8 +619,16 @@ mod tests {
 
     #[test]
     fn state_and_blocks_round_trip() {
-        let s = PlayerState { pos: [1.5, 64.0, -3.25], yaw: 90.0, pitch: -10.0, flags: ON_GROUND | SNEAKING, swings: 3, held: 16 };
+        let s = PlayerState { pos: [1.5, 64.0, -3.25], yaw: 90.0, pitch: -10.0, flags: ON_GROUND | SNEAKING, swings: 3, held: 16, held_item: 1, held_meta: 0, held_item_off: 0, held_meta_off: 0 };
         assert_eq!(PlayerState::decode(&s.encode()), Some(s));
+        // A state from a build before the held item fields.
+        let s = PlayerState { held_item: 278, held_meta: 12, held_item_off: 3, held_meta_off: 7, ..s };
+        let old = PlayerState::decode(&s.encode()[..PlayerState::MIN_SIZE]).unwrap();
+        assert_eq!((old.held, old.held_item, old.held_meta), (16, 0, 0));
+        // A 40 byte build has the main hand but not the off hand.
+        let mid = PlayerState::decode(&s.encode()[..40]).unwrap();
+        assert_eq!((mid.held_item, mid.held_item_off, mid.held_meta_off), (278, 0, 0));
+        assert_eq!(PlayerState::decode(&s.encode()[..35]), None);
         let b = vec![((1, 2, 3), 16), ((-100, 255, 7), 0)];
         assert_eq!(decode_blocks(&encode_blocks(&b)), b);
     }

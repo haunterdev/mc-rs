@@ -45,13 +45,23 @@ pub trait Tracked {
     fn velocity_changed(&self) -> bool {
         false
     }
+    /// The body of the `S_ENTITY_META` frame for the entity's current data (the data manager's
+    /// dirty check): `None` when the kind sends none. The tracker sends it when it changes.
+    fn meta_body(&self) -> Option<Vec<u8>> {
+        None
+    }
+    /// `EntityTrackerEntry.updatePlayerEntity`'s `SPacketEntityEquipment` per filled slot, sent
+    /// after the spawn frame.
+    fn equipment(&self) -> Vec<(u8, proto::WireStack)> {
+        Vec::new()
+    }
 }
 
 /// `EntityTrackerEntry.createSpawnPacket`: `SPacketSpawnMob` for an `IAnimals` (every mob in
 /// `sim::kinds`), `SPacketSpawnObject` for items, arrows and falling blocks.
 pub fn spawn_tag(kind: &Kind) -> u8 {
     match kind.name {
-        "item" | "arrow" | "falling_block" => proto::S_SPAWN_OBJECT,
+        "item" | "xp_orb" | "arrow" | "falling_block" => proto::S_SPAWN_OBJECT,
         _ => proto::S_SPAWN_MOB,
     }
 }
@@ -104,6 +114,8 @@ struct Entry {
     updated_visibility: bool,
     since_teleport: i32,
     on_ground: bool,
+    /// The last `Tracked::meta_body` the trackers were sent.
+    meta: Option<Vec<u8>>,
     trackers: BTreeSet<u32>,
 }
 
@@ -196,6 +208,7 @@ impl EntityTracker {
                 updated_visibility: false,
                 since_teleport: 0,
                 on_ground: ent.on_ground(),
+                meta: ent.meta_body(),
                 trackers: BTreeSet::new(),
             };
             for (&pid, w) in &self.players {
@@ -261,8 +274,11 @@ fn update_player_entity(e: &mut Entry, ent: &dyn Tracked, pid: u32, player: [f64
                 e.head = angle(ent.rotation()[2]);
             }
             out.frames.push((tag, ent.spawn_body()));
+            for (slot, stack) in ent.equipment() {
+                out.frames.push((proto::S_EQUIPMENT, proto::Equipment { id: ent.id(), slot, stack }.encode()));
+            }
             // DROPPED: SPacketEntityMetadata and SPacketEntityProperties after the spawn, the
-            // elytra velocity case, SPacketEntityEquipment, SPacketUseBed, SPacketEntityEffect and
+            // elytra velocity case, SPacketUseBed, SPacketEntityEffect and
             // SPacketSetPassengers: tasks that add metadata, equipment or riding send their own.
             e.last_motion = ent.motion();
             if e.kind.tracker_velocity && tag != proto::S_SPAWN_MOB {
@@ -286,8 +302,10 @@ fn update_player_list(e: &mut Entry, ent: &dyn Tracked, players: &BTreeMap<u32, 
         }
     }
     // DROPPED: SPacketSetPassengers on a passenger change and the item frame's map data.
-    // DROPPED: getDataManager().isDirty() as a reason to run: no metadata is tracked yet.
-    if e.counter % e.kind.tracker_interval == 0 || ent.air_borne() {
+    // getDataManager().isDirty(): changed metadata runs the update at once.
+    let meta = ent.meta_body();
+    let dirty = meta != e.meta;
+    if e.counter % e.kind.tracker_interval == 0 || ent.air_borne() || dirty {
         // DROPPED: the riding branch (S16PacketEntityLook only): nothing rides yet.
         e.since_teleport += 1;
         let now = pos.map(position_long);
@@ -298,7 +316,7 @@ fn update_player_list(e: &mut Entry, ent: &dyn Tracked, players: &BTreeMap<u32, 
         let turned = (yaw - e.yaw).abs() >= 1 || (pitch - e.pitch).abs() >= 1;
         let arrow = e.kind.name == "arrow";
         let at = |p: [i64; 3]| p.map(|v| v as f64 / 4096.0);
-        let mv = |pos: [f64; 3], yaw: i32, pitch: i32| EntityMove { id, pos, yaw: degrees(yaw), pitch: degrees(pitch), head_yaw: 0.0, on_ground: ent.on_ground() };
+        let mv = |pos: [f64; 3], yaw: i32, pitch: i32| EntityMove { id, pos, yaw: degrees(yaw), pitch: degrees(pitch), head_yaw: 0.0, on_ground: ent.on_ground(), teleport: false };
         let mut packet = None;
         if e.counter > 0 || arrow {
             if d.iter().all(|v| (-32768..32768).contains(v)) && e.since_teleport <= 400 && e.on_ground == ent.on_ground() {
@@ -320,7 +338,7 @@ fn update_player_list(e: &mut Entry, ent: &dyn Tracked, players: &BTreeMap<u32, 
                 // resetPlayerVisibility
                 e.updated_visibility = false;
                 // SPacketEntityTeleport
-                packet = Some(mv(pos, yaw, pitch));
+                packet = Some(EntityMove { teleport: true, ..mv(pos, yaw, pitch) });
             }
         }
         // DROPPED: isElytraFlying turning velocity on.
@@ -336,7 +354,15 @@ fn update_player_list(e: &mut Entry, ent: &dyn Tracked, players: &BTreeMap<u32, 
                 }
             }
         }
-        // DROPPED: sendMetadata (SPacketEntityMetadata, SPacketEntityProperties).
+        // sendMetadata: SPacketEntityMetadata (DROPPED: SPacketEntityProperties).
+        if dirty {
+            if let Some(body) = &meta {
+                for &p in &e.trackers {
+                    outs.entry(p).or_default().frames.push((proto::S_ENTITY_META, body.clone()));
+                }
+            }
+            e.meta = meta;
+        }
         if moved {
             e.encoded = now;
         }
@@ -386,16 +412,34 @@ pub fn on_frame(_game: &mut Game, _id: u32, _tag: u8, _body: &[u8]) -> bool {
 
 pub fn tick(game: &mut Game) {
     let players: Vec<(u32, [f64; 3])> = game.sessions.iter().filter_map(|(&id, s)| s.state.map(|st| (id, st.pos))).collect();
-    // Items (T5) and mobs (T9a) put their entities here.
-    let entities: Vec<&dyn Tracked> = Vec::new();
     let view = game.cfg.sim_distance;
-    let tracker = game.tracker.tracker.get_or_insert_with(|| EntityTracker::new(view));
-    let out = tracker.tick(&entities, &players);
+    // Items (T5) and mobs (T9a) put their entities here.
+    let out = {
+        let item_views = super::items::views(&game.items);
+        let mob_views = super::mobs::views(&game.mobs);
+        let arrow_views = super::mobs::arrow::views(&game.mobs.arrows);
+        let orb_views = super::xp_orbs::views(&game.xp_orbs);
+        let falling_views = super::falling_blocks::views(&game.falling);
+        let entities: Vec<&dyn Tracked> = item_views
+            .iter()
+            .map(|v| v as &dyn Tracked)
+            .chain(mob_views.iter().map(|v| v as &dyn Tracked))
+            .chain(arrow_views.iter().map(|v| v as &dyn Tracked))
+            .chain(orb_views.iter().map(|v| v as &dyn Tracked))
+            .chain(falling_views.iter().map(|v| v as &dyn Tracked))
+            .collect();
+        let tracker = game.tracker.tracker.get_or_insert_with(|| EntityTracker::new(view));
+        tracker.tick(&entities, &players)
+    };
     for (id, frames) in out {
         for (tag, body) in frames {
             net::send(game, id, tag, &body);
         }
     }
+    super::items::after_tracker(game);
+    super::xp_orbs::after_tracker(game);
+    super::falling_blocks::after_tracker(game);
+    super::mobs::after_tracker(game);
 }
 
 /// `EntityTracker.sendToTracking`: a frame about entity `entity` to every player tracking it.

@@ -24,6 +24,7 @@ pub struct Harness {
     tx: Sender<GameMsg>,
     inboxes: HashMap<u32, UnboundedReceiver<Vec<u8>>>,
     frames: HashMap<u32, Vec<(u8, Vec<u8>)>>,
+    seed: i64,
 }
 
 /// A fresh folder under the system temp folder.
@@ -51,8 +52,31 @@ impl Harness {
         let world = Arc::new(Mutex::new(World::load(&dir).expect("a world in the temp folder")));
         let (tx, rx) = channel();
         let mut game = Game::new(cfg, dir.clone(), rx, Box::new(|_| {}));
+        // No random ticks unless a test asks (leaves decaying in the natural trees would change
+        // the blocks other tests compare); farming_tests.rs drives them itself.
+        world.lock().unwrap().set_rule("randomTickSpeed", "0");
         terrain::attach(&mut game, world.clone());
-        Harness { game, world, dir, tx, inboxes: HashMap::new(), frames: HashMap::new() }
+        let mut h = Harness { game, world, dir, tx, inboxes: HashMap::new(), frames: HashMap::new(), seed };
+        h.reseed();
+        h
+    }
+
+    /// The game draws its random streams from the system source. A test restarts them from the
+    /// world seed so a chance-driven behaviour (a wander roll, a spawn attempt) plays out the same
+    /// every run. `settle` does it again on return: the ticks it runs wait on the generation
+    /// workers, so how many it takes (and how many rolls the spawner and mobs spent) varies.
+    pub fn reseed(&mut self) {
+        use worldgen::java_random::JavaRandom;
+        let mut seeds = JavaRandom::new(self.seed);
+        let g = &mut self.game;
+        g.mobs.rand = JavaRandom::new(seeds.next_long());
+        g.mobs.spawner.world_rand = JavaRandom::new(seeds.next_long());
+        g.mobs.spawner.math_random = JavaRandom::new(seeds.next_long());
+        g.items.rand = JavaRandom::new(seeds.next_long());
+        g.players.rand = JavaRandom::new(seeds.next_long());
+        g.blockticks.rand = Some(JavaRandom::new(seeds.next_long()));
+        g.blockticks.lcg = Some(seeds.next_long() as i32);
+        g.xp_orbs.rand = JavaRandom::new(seeds.next_long());
     }
 
     /// A survival session `id` joins and stands at `pos`.
@@ -65,7 +89,7 @@ impl Harness {
 
     /// The session's next state puts its player at `pos`.
     pub fn move_to(&mut self, id: u32, pos: [f64; 3]) {
-        let state = PlayerState { pos, yaw: 0.0, pitch: 0.0, flags: 0, swings: 0, held: 0 };
+        let state = PlayerState { pos, ..Default::default() };
         self.send(GameMsg::State { id, state });
     }
 
@@ -99,6 +123,7 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(2));
             self.tick(1);
         }
+        self.reseed();
     }
 
     /// Every frame session `id` got since the last call, as `(tag, body)`.

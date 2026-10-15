@@ -5,6 +5,7 @@
 //! The link is printed and written to `link.txt` in the data folder. cloudflared's whole log goes
 //! to `tunnel.log` there, which shows when the tunnel itself dropped and reconnected.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -37,16 +38,27 @@ pub fn link_in(line: &str) -> Option<&str> {
     url.contains(".trycloudflare.com").then_some(url)
 }
 
-/// The named tunnel's `cloudflared.yml`: the hostname to the web port, anything else 404. With no
-/// hostname every name the tunnel is routed to reaches the web port.
-pub fn named_config(name: &str, hostname: &str, port: u16) -> String {
+/// The named tunnel's `cloudflared.yml`: each of `routes` (a path prefix and everything under it)
+/// to its own port first, then the hostname to the web port, anything else 404. With no hostname
+/// every name the tunnel is routed to reaches the web port.
+pub fn named_config(name: &str, hostname: &str, port: u16, routes: &BTreeMap<String, u16>) -> String {
     let service = format!("http://127.0.0.1:{port}");
-    let ingress = if hostname.is_empty() {
-        format!("  - service: {service}\n")
+    let mut ingress = String::new();
+    for (prefix, to) in routes {
+        let escaped: String = prefix
+            .trim_end_matches('/')
+            .chars()
+            .flat_map(|c| "\\.+*?()|[]{}^$".contains(c).then_some('\\').into_iter().chain([c]))
+            .collect();
+        let rule = format!("path: ^{escaped}(/|$)\n    service: http://127.0.0.1:{to}\n");
+        ingress += &if hostname.is_empty() { format!("  - {rule}") } else { format!("  - hostname: {hostname}\n    {rule}") };
+    }
+    if hostname.is_empty() {
+        ingress += &format!("  - service: {service}\n");
     } else {
-        format!("  - hostname: {hostname}\n    service: {service}\n  - service: http_status:404\n")
-    };
-    format!("# Written by mc-rs-server on every start from server.json (tunnel_name, hostname, port).\ntunnel: {name}\ningress:\n{ingress}")
+        ingress += &format!("  - hostname: {hostname}\n    service: {service}\n  - service: http_status:404\n");
+    }
+    format!("# Written by mc-rs-server on every start from server.json (tunnel_name, hostname, port, routes).\ntunnel: {name}\ningress:\n{ingress}")
 }
 
 /// Starts the tunnel; the child stops when the returned handle drops.
@@ -59,7 +71,7 @@ pub async fn start(cfg: &Config, dir: &Path) -> Option<Child> {
     let named = !cfg.tunnel_name.is_empty();
     if named {
         let yml = dir.join("cloudflared.yml");
-        if let Err(e) = std::fs::write(&yml, named_config(&cfg.tunnel_name, &cfg.hostname, cfg.port)) {
+        if let Err(e) = std::fs::write(&yml, named_config(&cfg.tunnel_name, &cfg.hostname, cfg.port, &cfg.routes)) {
             println!("  could not write {}: {e}", yml.display());
             return None;
         }
@@ -125,9 +137,25 @@ mod tests {
 
     #[test]
     fn named_tunnel_config_routes_the_hostname_to_the_port() {
-        let yml = named_config("mc-rs", "play.example.com", 25580);
+        let none = BTreeMap::new();
+        let yml = named_config("mc-rs", "play.example.com", 25580, &none);
         assert!(yml.contains("tunnel: mc-rs\n"));
         assert!(yml.contains("  - hostname: play.example.com\n    service: http://127.0.0.1:25580\n  - service: http_status:404\n"));
-        assert!(named_config("mc-rs", "", 8080).ends_with("ingress:\n  - service: http://127.0.0.1:8080\n"));
+        assert!(named_config("mc-rs", "", 8080, &none).ends_with("ingress:\n  - service: http://127.0.0.1:8080\n"));
+    }
+
+    #[test]
+    fn routes_go_before_the_web_port() {
+        let routes = BTreeMap::from([("/rooster/".to_string(), 28015), ("/a.b".to_string(), 9000)]);
+        let yml = named_config("mc-rs", "example.com", 25580, &routes);
+        assert!(yml.ends_with(concat!(
+            "ingress:\n",
+            "  - hostname: example.com\n    path: ^/a\\.b(/|$)\n    service: http://127.0.0.1:9000\n",
+            "  - hostname: example.com\n    path: ^/rooster(/|$)\n    service: http://127.0.0.1:28015\n",
+            "  - hostname: example.com\n    service: http://127.0.0.1:25580\n  - service: http_status:404\n",
+        )));
+        assert!(named_config("mc-rs", "", 8080, &routes).ends_with(
+            "  - path: ^/rooster(/|$)\n    service: http://127.0.0.1:28015\n  - service: http://127.0.0.1:8080\n"
+        ));
     }
 }

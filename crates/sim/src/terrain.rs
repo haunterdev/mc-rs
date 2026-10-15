@@ -15,9 +15,14 @@ use std::collections::{HashMap, HashSet};
 
 use worldgen::blocks;
 use worldgen::populate::{self, behavior, PackedChunk, PopChunk, PopStatics, PopWorld, Pos as WPos};
+use worldgen::populate::ticks::TickList;
 use worldgen::{Chunk, ChunkGenerator};
 
 use crate::collision::BlockAccess;
+use crate::gravity::Fall;
+
+#[path = "fluids.rs"]
+mod fluids;
 
 /// A chunk position.
 pub type Pos = (i32, i32);
@@ -49,11 +54,38 @@ pub struct Terrain<'g> {
     /// Every block a player changed, by chunk: written over each chunk after every population
     /// that may touch it, so the shared world's edits outlast generating the chunk again.
     overlay: HashMap<Pos, HashMap<(i32, i32, i32), u16>>,
+    /// The pending tick list (flowing liquids), lent to the world only around edits and
+    /// [`Self::tick_blocks`], so population never schedules into it. `fluids.rs`.
+    ticks: TickList,
+    /// The list is on ([`Self::set_ticking`]).
+    ticking: bool,
+    /// The server's entity layer is on: falling blocks collect here as [`Fall`]s for the owner to
+    /// spawn (`EntityFallingBlock`) instead of landing at once. [`Self::take_falls`].
+    pub falls: Option<Vec<Fall>>,
 }
 
 impl<'g> Terrain<'g> {
     pub fn new(gen: &'g ChunkGenerator) -> Self {
-        Terrain { world: PopWorld::new(gen, PopStatics::default()), store: HashMap::new(), populated: HashSet::new(), overlay: HashMap::new() }
+        Terrain {
+            world: PopWorld::new(gen, PopStatics::default()),
+            store: HashMap::new(),
+            populated: HashSet::new(),
+            overlay: HashMap::new(),
+            ticks: TickList::new(),
+            ticking: false,
+            falls: None,
+        }
+    }
+
+    /// `BlockFalling.checkFallable` over the edit's change log: with the entity layer on
+    /// ([`Self::falls`]) the blocks start falling, otherwise they land at once (`gravity`).
+    fn settle_falls(&mut self) {
+        crate::gravity::settle_with(&mut self.world, 0, self.falls.as_mut());
+    }
+
+    /// The blocks that started to fall since the last call.
+    pub fn take_falls(&mut self) -> Vec<Fall> {
+        self.falls.as_mut().map(std::mem::take).unwrap_or_default()
     }
 
     /// The chunk is held or packed.
@@ -133,6 +165,7 @@ impl<'g> Terrain<'g> {
     /// holds at each edited block, so a refused or unchanged guess is put back.
     pub fn edit(&mut self, edits: &[Edit]) -> Vec<BlockChange> {
         self.world.changes = Some(Vec::new());
+        self.lend_ticks();
         for e in edits {
             let c = (e.at.0 >> 4, e.at.2 >> 4);
             if !self.known(c) {
@@ -147,8 +180,10 @@ impl<'g> Terrain<'g> {
             }
             self.world.set(p, e.s, e.flags);
         }
-        // DROPPED: the pending tick list (falling sand, flowing liquids); PopWorld runs only
-        // the immediate branch, which is off outside population.
+        // Falling blocks come down at once (`gravity`).
+        self.settle_falls();
+        // Flowing liquids go on the pending tick list (`fluids.rs`).
+        self.return_ticks();
         let mut changes = self.take_changes();
         // What the server has at every edited block goes back last, so a refused or
         // unchanged guess is put back. An unknown chunk is skipped: reading it would
@@ -191,10 +226,40 @@ impl<'g> Terrain<'g> {
         }
         self.unpack_around(c, -1, 1);
         self.world.changes = Some(Vec::new());
+        self.lend_ticks();
         self.world.set(WPos::new(at.0, at.1, at.2), s, flags);
+        self.settle_falls();
+        self.return_ticks();
         let changes = self.take_changes();
         self.remember(&changes);
         changes
+    }
+
+    /// [`Terrain::set`] with the state each returned change replaced, in the same order.
+    pub fn set_logged(&mut self, at: (i32, i32, i32), s: u16, flags: i32) -> (Vec<BlockChange>, Vec<u16>) {
+        self.world.olds = Some(Vec::new());
+        let changes = self.set(at, s, flags);
+        let olds = self.world.olds.take().unwrap_or_default();
+        (changes, olds)
+    }
+
+    /// `f` on the world around `at`, the way [`Self::set`] runs an edit: the 3x3 chunks unpacked,
+    /// every block `f` writes logged and returned (also remembered in the overlay), falling blocks
+    /// settled. For a tree growing from a sapling. None when the chunk is neither held nor packed.
+    pub fn edit_world<R>(&mut self, at: (i32, i32, i32), f: impl FnOnce(&mut PopWorld<'g>) -> R) -> Option<(R, Vec<BlockChange>)> {
+        let c = (at.0 >> 4, at.2 >> 4);
+        if !self.known(c) {
+            return None;
+        }
+        self.unpack_around(c, -1, 1);
+        self.world.changes = Some(Vec::new());
+        self.lend_ticks();
+        let out = f(&mut self.world);
+        self.settle_falls();
+        self.return_ticks();
+        let changes = self.take_changes();
+        self.remember(&changes);
+        Some((out, changes))
     }
 
     /// Brings chunk `p` back from the store when it is packed (a player came back in range);

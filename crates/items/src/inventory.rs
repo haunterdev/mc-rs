@@ -187,7 +187,8 @@ impl PlayerInventory {
         let mut itemstack = self.get_stack_in_slot(slot);
         if itemstack.is_empty() {
             // new ItemStack(item, 0, meta): an empty stack until it grows below.
-            itemstack = ItemStack::new(item, 0, stack.get_metadata());
+            // setTagCompound(stack.getTagCompound().copy()): the tag and the enchantments come along.
+            itemstack = ItemStack::new(item, 0, stack.get_metadata()).with_tag(stack.tag).with_ench(stack.ench);
         }
         let mut j = i;
         let max = itemstack.get_max_stack_size();

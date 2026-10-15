@@ -50,8 +50,11 @@ impl Player {
         if collision_box(w.state(bx, by, bz)).is_some() {
             return;
         }
-        // DROPPED: jump boost.
-        let f7 = 1.2f32;
+        let mut f7 = 1.2f32;
+        let boost = self.effects.jump_boost_level();
+        if boost > 0.0 {
+            f7 += boost * 0.75;
+        }
         let f8 = (f * 7.0).max(1.0 / f12);
         let mut vec3d4 = vec3d1 + vec3d12 * f8 as f64;
         let f9 = self.body.width;

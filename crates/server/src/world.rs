@@ -25,6 +25,10 @@ pub struct Saved {
     /// `/spawnpoint`: where `/kill` puts the player instead of the world spawn.
     #[serde(default)]
     pub spawn: Option<[i32; 3]>,
+    /// `spawn` was set by sleeping in a bed (`setSpawnPoint(pos, false)`): a respawn needs the bed
+    /// to still stand, where a `/spawnpoint` is forced.
+    #[serde(default)]
+    pub bed: bool,
 }
 
 /// The game mode a player the server has not seen starts in.
@@ -36,7 +40,7 @@ fn default_game_mode() -> u8 {
 
 impl Default for Saved {
     fn default() -> Saved {
-        Saved { pos: None, yaw: 0.0, pitch: 0.0, flying: false, game_mode: DEFAULT_GAME_MODE, spawn: None }
+        Saved { pos: None, yaw: 0.0, pitch: 0.0, flying: false, game_mode: DEFAULT_GAME_MODE, spawn: None, bed: false }
     }
 }
 
@@ -89,12 +93,14 @@ struct WorldFile {
     spawn: [i32; 3],
     rules: BTreeMap<String, String>,
     weather: Weather,
+    /// `WorldInfo.difficulty` id once `/difficulty` set it; `None` follows server.json.
+    difficulty: Option<u8>,
 }
 
 impl Default for WorldFile {
     fn default() -> WorldFile {
         // The viewer's spawn column before the server kept one; respawns stand on its top block.
-        WorldFile { time: 0, total: 0, spawn: [8, 64, 8], rules: BTreeMap::new(), weather: Weather::default() }
+        WorldFile { time: 0, total: 0, spawn: [8, 64, 8], rules: BTreeMap::new(), weather: Weather::default(), difficulty: None }
     }
 }
 
@@ -160,6 +166,8 @@ pub struct World {
     pub spawn: [i32; 3],
     rules: BTreeMap<String, String>,
     pub weather: Weather,
+    /// `WorldInfo.difficulty` id (0 to 3) once set by `/difficulty` or taken from server.json at start.
+    pub difficulty: Option<u8>,
     paintings: BTreeMap<u64, Painting>,
 }
 
@@ -213,6 +221,7 @@ impl World {
             spawn: wf.spawn,
             rules,
             weather: wf.weather,
+            difficulty: wf.difficulty,
             paintings: decode_paintings(&std::fs::read(dir.join("paintings.bin")).unwrap_or_default()),
         })
     }
@@ -380,6 +389,7 @@ impl World {
             spawn: self.spawn,
             rules: self.rules.clone(),
             weather: self.weather.clone(),
+            difficulty: self.difficulty,
         };
         write_atomic(&self.dir.join("world.json"), &serde_json::to_string_pretty(&wf).unwrap());
         if let Some(log) = &mut self.log {
@@ -424,7 +434,7 @@ mod tests {
         assert_eq!(std::fs::metadata(d.join("edits.bin")).unwrap().len(), 28, "compacted to one record a block");
         assert_eq!(
             w.player("xy"),
-            Some(Saved { pos: Some([1.0, 65.0, 2.0]), yaw: 45.0, pitch: 0.0, flying: true, game_mode: DEFAULT_GAME_MODE, spawn: Some([3, 70, -4]) })
+            Some(Saved { pos: Some([1.0, 65.0, 2.0]), yaw: 45.0, pitch: 0.0, flying: true, game_mode: DEFAULT_GAME_MODE, spawn: Some([3, 70, -4]), bed: false })
         );
         assert_eq!(w.game_mode("Other"), proto::GM_SPECTATOR);
         assert_eq!(w.game_mode("nobody"), DEFAULT_GAME_MODE);

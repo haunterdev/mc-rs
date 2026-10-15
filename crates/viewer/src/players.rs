@@ -8,7 +8,20 @@
 //! name is `EntityRenderer.drawNameplate` in the game's own font: a billboard over the head, its
 //! background and a faint copy seen through walls, the text itself depth tested; a sneaking
 //! player's name is depth tested only and dim. In third person (F5) the player's own model
-//! draws too, following the player each tick.
+//! draws too, following the player each tick. What each model holds is `held.rs`, what it wears
+//! `armor.rs`.
+
+mod armor;
+mod held;
+mod plate;
+mod posing;
+
+pub use armor::{texture_path as armor_texture_path, update_armor, ArmorImages, MATERIALS as ARMOR_MATERIALS};
+pub use held::{held_fields, local_matrix, pose_held};
+pub use plate::{Font, PlateMaterials};
+use plate::{plate_meshes, Plate};
+pub use posing::pose_others;
+use posing::{body_matrix, pose};
 
 use std::collections::HashMap;
 use std::f32::consts::PI;
@@ -29,7 +42,6 @@ use crate::material::{EntityMaterial, NameplateMaterial, PlateKind, PlateParams}
 use crate::player::Player;
 use crate::sky::{neighbor_light, Clock, View};
 use crate::stream::Streamer;
-use crate::textures::Argb;
 
 /// What link.rs hands over from the server.
 pub enum OtherEvent {
@@ -42,6 +54,18 @@ pub enum OtherEvent {
 pub struct Others {
     pub events: Vec<OtherEvent>,
     by_id: HashMap<u32, Entity>,
+}
+
+impl Others {
+    /// The model entity of the player with this id.
+    pub fn entity_of(&self, id: u32) -> Option<Entity> {
+        self.by_id.get(&id).copied()
+    }
+
+    /// Every other player's id and model entity.
+    pub fn all(&self) -> impl Iterator<Item = (u32, Entity)> + '_ {
+        self.by_id.iter().map(|(&id, &e)| (id, e))
+    }
 }
 
 /// `Entity.distanceWalkedOnStepModified` for another player: the server's `Entity.move` plays
@@ -65,64 +89,6 @@ fn step_due(o: &mut Other, d: DVec3) -> bool {
 pub struct Skin {
     pub skin: Handle<Image>,
     pub env: Handle<Image>,
-}
-
-/// `textures/font/ascii.png` and `FontRenderer.charWidth`.
-#[derive(Resource)]
-pub struct Font {
-    pub image: Handle<Image>,
-    pub widths: [u8; 256],
-}
-
-impl Font {
-    /// `FontRenderer.readFontTexture`: each glyph's width is its last column with any opaque
-    /// pixel, plus one, scaled to 8 pixels a cell, plus one.
-    pub fn widths(img: &Argb) -> [u8; 256] {
-        let (w, h) = (img.width as usize, img.height as usize);
-        let (cw, ch) = (w / 16, h / 16);
-        let scale = 8.0 / cw as f32;
-        std::array::from_fn(|i| {
-            let (gx, gy) = (i % 16, i / 16);
-            let mut l1 = cw as i32 - 1;
-            while l1 >= 0 {
-                let x = gx * cw + l1 as usize;
-                let opaque = (0..ch).any(|y| img.pixels[(gy * ch + y) * w + x] >> 24 != 0);
-                if opaque {
-                    break;
-                }
-                l1 -= 1;
-            }
-            let l1 = l1 + 1;
-            if i == 32 {
-                // A space is 4 wide.
-                return 4;
-            }
-            ((0.5 + (l1 as f32 * scale) as f64) as i32 + 1) as u8
-        })
-    }
-
-    /// `FontRenderer.getStringWidth`
-    pub fn string_width(&self, s: &str) -> i32 {
-        s.bytes().map(|b| self.widths[b as usize] as i32).sum()
-    }
-}
-
-/// The name tag materials, one per way a piece draws.
-#[derive(Resource)]
-pub struct PlateMaterials {
-    bg: Handle<NameplateMaterial>,
-    bg_depth: Handle<NameplateMaterial>,
-    through: Handle<NameplateMaterial>,
-    text: Handle<NameplateMaterial>,
-    text_dim: Handle<NameplateMaterial>,
-}
-
-/// A name tag's three pieces.
-#[derive(Clone, Copy)]
-struct Plate {
-    bg: Entity,
-    through: Entity,
-    text: Entity,
 }
 
 /// `SWING_END` in hand.rs.
@@ -164,6 +130,18 @@ pub struct Other {
 #[derive(Component)]
 pub struct OwnModel;
 
+/// Marks the model of the inventory screens (`GuiInventory.drawEntityOnScreen`): a second copy of
+/// the player's model on [`PREVIEW_LAYER`], seen by [`InventoryCamera`] only.
+#[derive(Component)]
+pub struct InventoryModel;
+
+/// The orthographic camera that draws the [`InventoryModel`] over the screen (order 3).
+#[derive(Component)]
+pub struct InventoryCamera;
+
+/// The render layer of the inventory model and its camera.
+pub const PREVIEW_LAYER: usize = 4;
+
 #[derive(Clone, Copy)]
 enum Part {
     Head,
@@ -197,40 +175,6 @@ fn part_mesh(part: Part) -> Mesh {
         .with_inserted_indices(Indices::U32(b.idx))
 }
 
-/// A name tag's background quad and its text, in the font's pixels (y down), centered as
-/// `drawNameplate` centers them: the text from `-width / 2`, the quad one pixel wider each side,
-/// from -1 to 8 tall.
-fn plate_meshes(font: &Font, name: &str) -> (Mesh, Mesh) {
-    let half = font.string_width(name) / 2;
-    let quad_mesh = |quads: &[([f32; 4], [f32; 4])]| {
-        let (mut pos, mut uv, mut idx) = (Vec::new(), Vec::new(), Vec::new());
-        for ([x0, y0, x1, y1], [u0, v0, u1, v1]) in quads.iter().copied() {
-            let base = pos.len() as u32;
-            pos.extend_from_slice(&[[x0, y0, 0.0], [x0, y1, 0.0], [x1, y1, 0.0], [x1, y0, 0.0]]);
-            uv.extend_from_slice(&[[u0, v0], [u0, v1], [u1, v1], [u1, v0]]);
-            idx.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-        }
-        let n = vec![[0.0, 0.0, 1.0]; pos.len()];
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, n)
-            .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-            .with_inserted_indices(Indices::U32(idx))
-    };
-    let bg = quad_mesh(&[([-half as f32 - 1.0, -1.0, half as f32 + 1.0, 8.0], [0.0; 4])]);
-    // FontRenderer.renderDefaultChar: a glyph quad charWidth - 1.01 wide, 7.99 tall.
-    let mut glyphs = Vec::new();
-    let mut x = -half as f32;
-    for b in name.bytes() {
-        let w = font.widths[b as usize] as f32;
-        let f = w - 0.01;
-        let (gx, gy) = ((b % 16) as f32 * 8.0, (b / 16) as f32 * 8.0);
-        glyphs.push(([x, 0.0, x + f - 1.0, 7.99], [gx / 128.0, gy / 128.0, (gx + f - 1.0) / 128.0, (gy + 7.99) / 128.0]));
-        x += w;
-    }
-    (bg, quad_mesh(&glyphs))
-}
-
 #[derive(Resource)]
 pub struct PartMeshes([Handle<Mesh>; 6]);
 
@@ -251,6 +195,22 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 impl Other {
+    /// `Entity.getEntityBoundingBox` for the player's `setSize(0.6, 1.8)` (1.65 high sneaking),
+    /// centred on the feet, or None before the first position arrived.
+    pub fn bb(&self) -> Option<sim::collision::Aabb> {
+        if self.pos == DVec3::ZERO {
+            return None;
+        }
+        let h = if self.target.flags & proto::SNEAKING != 0 { 1.65 } else { 1.8 };
+        let f = 0.3f32 as f64;
+        Some(sim::collision::Aabb::new(self.pos.x - f, self.pos.y, self.pos.z - f, self.pos.x + f, self.pos.y + h, self.pos.z + f))
+    }
+
+    /// The feet between the last two ticks (`prevPos` to `pos` at `partial`).
+    pub fn interp_feet(&self, partial: f32) -> DVec3 {
+        self.prev_pos + (self.pos - self.prev_pos) * partial as f64
+    }
+
     fn new(plate: Option<Plate>, parts: [Entity; 6], material: Handle<EntityMaterial>) -> Other {
         Other {
             target: PlayerState::default(),
@@ -439,7 +399,7 @@ fn spawn_model(
     plate_mats: &[Handle<NameplateMaterial>; 5],
     name: Option<&str>,
 ) -> Entity {
-    let material = materials.add(EntityMaterial { env: skin.env.clone(), skin: skin.skin.clone(), light: Vec4::new(0.0, 240.0, 0.0, 0.0) });
+    let material = materials.add(EntityMaterial::new(skin.env.clone(), skin.skin.clone()));
     let root = commands.spawn((Transform::default(), Visibility::Hidden)).id();
     let parts = std::array::from_fn(|i| {
         commands.spawn((Mesh3d(parts[i].clone()), MeshMaterial3d(material.clone()), Transform::default(), ChildOf(root))).id()
@@ -538,12 +498,128 @@ pub fn own_model(
     if player.flying {
         flags |= proto::FLYING;
     }
-    let held = crate::hotbar::held_state(&inv.get_current_item());
-    o.follow(PlayerState { pos: player.pos.to_array(), yaw: player.yaw, pitch: player.pitch, flags, swings: hand.swings, held });
+    let (held, held_item, held_meta) = held_fields(&inv.get_current_item());
+    let (_, held_item_off, held_meta_off) = held_fields(&inv.get_stack_in_slot(40));
+    o.follow(PlayerState { pos: player.pos.to_array(), yaw: player.yaw, pitch: player.pitch, flags, swings: hand.swings, held, held_item, held_meta, held_item_off, held_meta_off });
+}
+
+/// `GuiInventory.drawEntityOnScreen`: while a screen asks for the player model, a copy of the
+/// player's model stands at the player's feet (so `getBrightnessForRender` lights it as the world
+/// does), turned toward the pointer as `drawEntityOnScreen` sets `renderYawOffset`, `rotationYaw`
+/// and `rotationPitch`, and the camera puts its feet at the GUI pixel the screen names, `scale`
+/// pixels per block. Worn armor and the held item come from the same systems as every model.
+/// DROPPED: the real player's limb swing and arm swing (the model stands still), the shadow.
+#[allow(clippy::too_many_arguments)]
+pub fn inventory_model(
+    mut commands: Commands,
+    clock: Res<Clock>,
+    player: Res<Player>,
+    inv: Res<Inventory>,
+    skin: Res<Skin>,
+    font: Res<Font>,
+    frame: Option<Res<crate::survival::gui::draw::Frame>>,
+    window: Single<&Window, With<bevy::window::PrimaryWindow>>,
+    have: Option<(Res<PartMeshes>, Res<PlateMaterials>)>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<EntityMaterial>>,
+    mut plates: ResMut<Assets<NameplateMaterial>>,
+    mut model: Query<&mut Other, With<InventoryModel>>,
+    mut camera: Query<(&mut Camera, &mut Transform, &mut Projection), With<InventoryCamera>>,
+) {
+    use bevy::camera::visibility::RenderLayers;
+    let want = frame.as_deref().and_then(|f| f.player_model).filter(|_| player.spawned);
+    let Ok(mut o) = model.single_mut() else {
+        if want.is_some() {
+            let (parts, plate_mats) = shared(&mut commands, &mut meshes, &mut plates, &font, have.as_ref().map(|(a, b)| (&**a, &**b)));
+            let root = spawn_model(&mut commands, &mut meshes, &mut materials, &skin, &font, &parts, &plate_mats, None);
+            commands.entity(root).insert((InventoryModel, RenderLayers::layer(PREVIEW_LAYER)));
+            commands.spawn((
+                InventoryCamera,
+                Camera3d::default(),
+                Camera { order: 3, is_active: false, clear_color: ClearColorConfig::None, ..default() },
+                Projection::Orthographic(OrthographicProjection {
+                    near: 0.1,
+                    far: 100.0,
+                    scaling_mode: bevy::camera::ScalingMode::Fixed { width: 1.0, height: 1.0 },
+                    ..OrthographicProjection::default_3d()
+                }),
+                bevy::core_pipeline::tonemapping::Tonemapping::None,
+                bevy::core_pipeline::tonemapping::DebandDither::Disabled,
+                Msaa::Off,
+                Transform::default(),
+                RenderLayers::layer(PREVIEW_LAYER),
+            ));
+        }
+        return;
+    };
+    let Some(spec) = want else {
+        // No screen asks: hidden (pose_others shows only increments >= 0), and the camera off.
+        o.increments = -1;
+        for (mut c, ..) in &mut camera {
+            c.is_active = false;
+        }
+        return;
+    };
+    let mut flags = 0;
+    if player.is_sneaking() {
+        flags |= proto::SNEAKING;
+    }
+    let (held, held_item, held_meta) = held_fields(&inv.get_current_item());
+    let (_, held_item_off, held_meta_off) = held_fields(&inv.get_stack_in_slot(40));
+    o.set_target(PlayerState { pos: player.pos.to_array(), yaw: player.yaw, pitch: player.pitch, flags, held, held_item, held_meta, held_item_off, held_meta_off, ..default() });
+    o.age += clock.ticks_this_frame;
+    // drawEntityOnScreen: renderYawOffset atan(x / 40) * 20, rotationYaw atan(x / 40) * 40,
+    // rotationPitch -atan(y / 40) * 20 (the atan in radians, the product in degrees); the
+    // previous values the same (partial tick 1).
+    let (f, g) = ((spec.mouse_x / 40.0).atan(), (spec.mouse_y / 40.0).atan());
+    o.increments = 0;
+    o.pos = DVec3::from_array(player.pos.to_array());
+    o.prev_pos = o.pos;
+    (o.body_yaw, o.prev_body_yaw) = (f * 20.0, f * 20.0);
+    (o.yaw, o.prev_yaw) = (f * 40.0, f * 40.0);
+    (o.pitch, o.prev_pitch) = (-g * 20.0, -g * 20.0);
+    (o.limb_swing, o.limb_amount, o.prev_limb_amount, o.swing, o.prev_swing, o.swing_int, o.swinging) = (0.0, 0.0, 0.0, 0.0, 0.0, 0, false);
+
+    // The camera: the feet at GUI pixel (x, y) with `scale` pixels per block, looking down -z at
+    // a model that faces +z.
+    let (w, h) = (window.physical_width(), window.physical_height());
+    let k = crate::hand::gui_scale(w, h) as f32;
+    let (gw, gh) = (w as f32 / k, h as f32 / k);
+    let s = spec.scale as f32;
+    let feet = o.pos.as_vec3();
+    for (mut c, mut t, mut p) in &mut camera {
+        c.is_active = true;
+        if let Projection::Orthographic(op) = &mut *p {
+            op.scaling_mode = bevy::camera::ScalingMode::Fixed { width: gw / s, height: gh / s };
+        }
+        t.translation = feet + Vec3::new(-(spec.x as f32 - gw / 2.0) / s, -(gh / 2.0 - spec.y as f32) / s, 10.0);
+    }
+}
+
+/// After the model is posed: `rotate(-atan(mouseY / 40) * 20, 1, 0, 0)` about the feet, and the
+/// render layer on every part, armor box and held item below the inventory model's root.
+pub fn finish_inventory_model(
+    mut commands: Commands,
+    frame: Option<Res<crate::survival::gui::draw::Frame>>,
+    mut root: Query<(Entity, &Other, &mut Transform), With<InventoryModel>>,
+    children: Query<&Children>,
+    layers: Query<&bevy::camera::visibility::RenderLayers>,
+) {
+    let Ok((e, o, mut t)) = root.single_mut() else { return };
+    for d in children.iter_descendants(e) {
+        if layers.get(d).is_err() {
+            commands.entity(d).insert(bevy::camera::visibility::RenderLayers::layer(PREVIEW_LAYER));
+        }
+    }
+    let Some(spec) = frame.as_deref().and_then(|f| f.player_model) else { return };
+    let a = -(spec.mouse_y / 40.0).atan() * 20.0;
+    let feet = o.pos.as_vec3();
+    let tilt = Mat4::from_translation(feet) * Mat4::from_rotation_x(a.to_radians()) * Mat4::from_translation(-feet);
+    *t = Transform::from_matrix(tilt * t.to_matrix());
 }
 
 /// This frame's client ticks for every other player, with their footsteps.
-pub fn tick_others(clock: Res<Clock>, streamer: Res<Streamer>, audio: Res<crate::audio::Audio>, mut players: Query<&mut Other, Without<OwnModel>>) {
+pub fn tick_others(clock: Res<Clock>, streamer: Res<Streamer>, audio: Res<crate::audio::Audio>, mut players: Query<&mut Other, (Without<OwnModel>, Without<InventoryModel>)>) {
     for _ in 0..clock.ticks_this_frame {
         for mut o in &mut players {
             o.tick();
@@ -561,179 +637,10 @@ pub fn tick_others(clock: Res<Clock>, streamer: Res<Streamer>, audio: Res<crate:
     }
 }
 
-/// Part pivots and angles from `ModelBiped.setRotationAngles` (the player model's own overrides
-/// change nothing for an empty or block-holding hand).
-fn pose(o: &Other, partial: f32) -> [(Vec3, Vec3); 6] {
-    let limb_amount = lerp(o.prev_limb_amount, o.limb_amount, partial).min(1.0);
-    let limb_swing = o.limb_swing - o.limb_amount * (1.0 - partial);
-    let age = o.age as f32 + partial;
-    let body_yaw = lerp(o.prev_body_yaw, o.body_yaw, partial);
-    let yaw = o.prev_yaw + wrap(o.yaw - o.prev_yaw) * partial;
-    let head_yaw = wrap(yaw - body_yaw).to_radians();
-    let head_pitch = lerp(o.prev_pitch, o.pitch, partial).to_radians();
-    let sneak = o.sneaking();
-    let swing = o.swing_progress(partial);
-
-    let mut head = (Vec3::ZERO, Vec3::new(head_pitch, head_yaw, 0.0));
-    let mut body = (Vec3::ZERO, Vec3::ZERO);
-    let mut right_arm = (Vec3::new(-5.0, 2.0, 0.0), Vec3::ZERO);
-    let mut left_arm = (Vec3::new(5.0, 2.0, 0.0), Vec3::ZERO);
-    let mut right_leg = (Vec3::new(-1.9, 12.0, 0.1), Vec3::ZERO);
-    let mut left_leg = (Vec3::new(1.9, 12.0, 0.1), Vec3::ZERO);
-
-    right_arm.1.x = (limb_swing * 0.6662 + PI).cos() * 2.0 * limb_amount * 0.5;
-    left_arm.1.x = (limb_swing * 0.6662).cos() * 2.0 * limb_amount * 0.5;
-    right_leg.1.x = (limb_swing * 0.6662).cos() * 1.4 * limb_amount;
-    left_leg.1.x = (limb_swing * 0.6662 + PI).cos() * 1.4 * limb_amount;
-    // ArmPose.ITEM for a held block.
-    if o.target.held != 0 {
-        right_arm.1.x = right_arm.1.x * 0.5 - PI / 10.0;
-    }
-    if swing > 0.0 {
-        body.1.y = ((swing.sqrt()) * PI * 2.0).sin() * 0.2;
-        right_arm.0.z = body.1.y.sin() * 5.0;
-        right_arm.0.x = -body.1.y.cos() * 5.0;
-        left_arm.0.z = -body.1.y.sin() * 5.0;
-        left_arm.0.x = body.1.y.cos() * 5.0;
-        right_arm.1.y += body.1.y;
-        left_arm.1.y += body.1.y;
-        left_arm.1.x += body.1.y;
-        let mut f1 = 1.0 - swing;
-        f1 *= f1;
-        f1 *= f1;
-        f1 = 1.0 - f1;
-        let f2 = (f1 * PI).sin();
-        let f3 = (swing * PI).sin() * -(head.1.x - 0.7) * 0.75;
-        right_arm.1.x -= f2 * 1.2 + f3;
-        right_arm.1.y += body.1.y * 2.0;
-        right_arm.1.z += (swing * PI).sin() * -0.4;
-    }
-    if sneak {
-        body.1.x = 0.5;
-        right_arm.1.x += 0.4;
-        left_arm.1.x += 0.4;
-        right_leg.0.z = 4.0;
-        left_leg.0.z = 4.0;
-        right_leg.0.y = 9.0;
-        left_leg.0.y = 9.0;
-        head.0.y = 1.0;
-    }
-    right_arm.1.z += (age * 0.09).cos() * 0.05 + 0.05;
-    left_arm.1.z -= (age * 0.09).cos() * 0.05 + 0.05;
-    right_arm.1.x += (age * 0.067).sin() * 0.05;
-    left_arm.1.x -= (age * 0.067).sin() * 0.05;
-    [head, body, right_arm, left_arm, right_leg, left_leg]
-}
-
-/// Places every player model and name tag for this frame.
-#[allow(clippy::too_many_arguments)]
-pub fn pose_others(
-    clock: Res<Clock>,
-    view: Res<View>,
-    hide: Res<HideGui>,
-    streamer: Res<Streamer>,
-    plate_mats: Option<Res<PlateMaterials>>,
-    mut materials: ResMut<Assets<EntityMaterial>>,
-    players: Query<(Entity, &Other, Has<OwnModel>)>,
-    mut transforms: Query<&mut Transform>,
-    mut visibility: Query<&mut Visibility>,
-    mut plate_handles: Query<&mut MeshMaterial3d<NameplateMaterial>>,
-) {
-    let partial = clock.partial;
-    let set_vis = |visibility: &mut Query<&mut Visibility>, e: Entity, on: bool| {
-        if let Ok(mut v) = visibility.get_mut(e) {
-            let want = if on { Visibility::Inherited } else { Visibility::Hidden };
-            if *v != want {
-                *v = want;
-            }
-        }
-    };
-    // RenderManager.playerViewY and playerViewX, turned round for the front view.
-    let (view_yaw, view_pitch) = if view.third_person == 2 { (view.yaw + 180.0, -view.pitch) } else { (view.yaw, view.pitch) };
-    for (e, o, own) in &players {
-        let shown = o.increments >= 0 && (!own || view.third_person != 0);
-        set_vis(&mut visibility, e, shown);
-        if !shown {
-            if let Some(p) = o.plate {
-                for piece in [p.bg, p.through, p.text] {
-                    set_vis(&mut visibility, piece, false);
-                }
-            }
-            continue;
-        }
-        let mut pos = o.prev_pos.lerp(o.pos, partial as f64);
-        if o.sneaking() {
-            // RenderPlayer.doRender
-            pos.y -= 0.125;
-        }
-        let body_yaw = lerp(o.prev_body_yaw, o.body_yaw, partial);
-        // RenderLivingBase.doRender: rotate 180 - renderYawOffset, scale (-1, -1, 1), the
-        // player's 0.9375, translate down 1.501, then the model's 1/16 units.
-        let root = Mat4::from_translation(pos.as_vec3())
-            * Mat4::from_rotation_y((180.0 - body_yaw).to_radians())
-            * Mat4::from_scale(Vec3::new(-0.9375, -0.9375, 0.9375))
-            * Mat4::from_translation(Vec3::new(0.0, -1.501, 0.0))
-            * Mat4::from_scale(Vec3::splat(1.0 / 16.0));
-        if let Ok(mut t) = transforms.get_mut(e) {
-            *t = Transform::from_matrix(root);
-        }
-        for (i, (pivot, angles)) in pose(o, partial).into_iter().enumerate() {
-            if let Ok(mut t) = transforms.get_mut(o.parts[i]) {
-                // ModelRenderer.render: translate to the pivot, rotate Z, Y, X.
-                *t = Transform { translation: pivot, rotation: Quat::from_euler(EulerRot::ZYX, angles.z, angles.y, angles.x), scale: Vec3::ONE };
-            }
-        }
-        // getBrightnessForRender at the eyes: the lightmap coordinates the shader looks up.
-        let eye = pos + DVec3::new(0.0, 1.62, 0.0);
-        let (sky, block) = neighbor_light(&streamer, eye.x.floor() as i32, eye.y.floor() as i32, eye.z.floor() as i32);
-        let light = Vec4::new(block as f32 * 16.0, sky as f32 * 16.0, 0.0, 0.0);
-        if materials.get(&o.material).is_some_and(|m| m.light != light) {
-            if let Some(mut m) = materials.get_mut(&o.material) {
-                m.light = light;
-            }
-        }
-
-        // Render.renderLivingLabel: within 64 blocks of the viewer (32 sneaking), with the GUI.
-        let Some(p) = o.plate else { continue };
-        let Some(pm) = plate_mats.as_deref() else { continue };
-        let sneak = o.sneaking();
-        let range = if sneak { 32.0 } else { 64.0 };
-        let near = (o.pos - view.feet.as_dvec3()).length_squared() <= range * range;
-        let on = near && !hide.0;
-        set_vis(&mut visibility, p.bg, on);
-        set_vis(&mut visibility, p.through, on && !sneak);
-        set_vis(&mut visibility, p.text, on);
-        if !on {
-            continue;
-        }
-        // drawNameplate: over the head by height + 0.5 (0.25 less sneaking), turned to the
-        // viewer, scaled to 0.025 a font pixel with y down.
-        let at = pos.as_vec3() + Vec3::Y * (1.8 + 0.5 - if sneak { 0.25 } else { 0.0 });
-        let m = Mat4::from_translation(at)
-            * Mat4::from_rotation_y((-view_yaw).to_radians())
-            * Mat4::from_rotation_x(view_pitch.to_radians())
-            * Mat4::from_scale(Vec3::new(-0.025, -0.025, 0.025));
-        // The background sorts behind the text in the blended pass: it draws first, as vanilla
-        // draws it first.
-        let away = (at - view.eye).normalize_or_zero() * 0.05;
-        for (piece, offset) in [(p.bg, away), (p.through, Vec3::ZERO), (p.text, Vec3::ZERO)] {
-            if let Ok(mut t) = transforms.get_mut(piece) {
-                *t = Transform::from_matrix(Mat4::from_translation(offset) * m);
-            }
-        }
-        for (piece, want) in [(p.bg, if sneak { &pm.bg_depth } else { &pm.bg }), (p.text, if sneak { &pm.text_dim } else { &pm.text })] {
-            if let Ok(mut h) = plate_handles.get_mut(piece) {
-                if h.0 != *want {
-                    h.0 = want.clone();
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::textures::Argb;
 
     fn other() -> Other {
         Other::new(None, [Entity::PLACEHOLDER; 6], Handle::default())

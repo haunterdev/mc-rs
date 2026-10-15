@@ -252,3 +252,54 @@ fn turn_clamps_pitch_and_carries_the_previous_angle() {
     let l = look(0.0, -90.0);
     assert!((l - Vec3::X).length() < 1e-3, "{l}");
 }
+
+#[test]
+fn survival_cannot_double_jump_into_flight() {
+    let w = Blocks::floor_at(63, 8);
+    let mut p = standing(&w, 64.0);
+    p.game_mode = proto::GM_SURVIVAL;
+    let jump = Keys { jump: true, ..Keys::default() };
+    p.tick(&w, &jump);
+    p.tick(&w, &Keys::default());
+    p.tick(&w, &jump);
+    assert!(!p.flying && !p.allow_flying());
+}
+
+#[test]
+fn hunger_at_six_stops_the_sprint_unless_flying_is_allowed() {
+    let w = Blocks::floor_at(63, 16);
+    let run = Keys { forward: true, sprint: true, ..Keys::default() };
+    for (mode, food, sprints) in [
+        (proto::GM_SURVIVAL, 20, true),
+        (proto::GM_SURVIVAL, 7, true),
+        (proto::GM_SURVIVAL, 6, false),
+        (proto::GM_ADVENTURE, 0, false),
+        (proto::GM_CREATIVE, 0, true),
+    ] {
+        let mut p = standing(&w, 64.0);
+        p.game_mode = mode;
+        p.food_level = food;
+        for _ in 0..5 {
+            p.tick(&w, &run);
+        }
+        assert_eq!(p.sprinting, sprints, "mode {mode} food {food}");
+    }
+    // Running out of food mid-sprint ends it on the next tick.
+    let mut p = standing(&w, 64.0);
+    p.game_mode = proto::GM_SURVIVAL;
+    for _ in 0..5 {
+        p.tick(&w, &run);
+    }
+    assert!(p.sprinting);
+    p.food_level = 6;
+    p.tick(&w, &run);
+    assert!(!p.sprinting);
+}
+
+#[test]
+fn a_velocity_frame_sets_the_motion() {
+    let mut p = Player::new(DVec3::new(0.5, 64.0, 0.5), 0.0, 0.0);
+    p.motion = DVec3::new(1.0, 1.0, 1.0);
+    p.set_velocity([-0.25, 0.4, 0.5]);
+    assert_eq!(p.motion, DVec3::new(-0.25, 0.4f32 as f64, 0.5));
+}

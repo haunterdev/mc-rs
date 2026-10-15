@@ -156,8 +156,10 @@ function stepPicture(dir) {
     if (performance.now() - steppedUpAt < 30000) upFailed = true;
     cap = Math.min(6, cap + 1);
   } else {
-    if (upFailed || cap === 0) return;
-    cap -= 1;
+    if (upFailed) return;
+    if (cap > 0) cap -= 1;
+    else if (store.get('mcrs.tune.held') !== '1') store.set('mcrs.tune.held', '1');
+    else return;
     steppedUpAt = performance.now();
   }
   store.set('mcrs.tune.cap', cap);

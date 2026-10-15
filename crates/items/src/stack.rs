@@ -1,24 +1,103 @@
 //! `ItemStack`: an item id, a count and a damage (metadata), with the comparisons crafting,
 //! furnaces and inventories use.
 //!
-//! The NBT tag compound (`stackTagCompound`) is reduced to [`Tag`]: the one entry each creative
-//! sub-item carries (a potion type, a stored enchantment, a spawn egg's entity). Tag comparisons
-//! compare that. DROPPED: the rest of NBT (applied enchantments, custom names, banner patterns,
-//! the `Unbreakable` flag), `animationsToGo` (a client bob after pickup) and the item frame link.
+//! The NBT tag compound (`stackTagCompound`) is reduced to [`Tag`] (a potion type or a spawn
+//! egg's entity) and the enchantment list [`EnchList`] (`ench`, or `StoredEnchantments` on an
+//! enchanted book). Tag comparisons compare both. DROPPED: the rest of NBT (custom names, banner
+//! patterns, the `Unbreakable` flag, `RepairCost`), `animationsToGo` (a client bob after pickup)
+//! and the item frame link.
 
+use worldgen::java_random::JavaRandom;
+
+use crate::enchant::{self, id as ench_id};
 use crate::registry::{self, ItemDef};
 use crate::{ids::item, tools};
 
-/// The part of `stackTagCompound` this port keeps: one entry, the one the stack's creative
-/// sub-item sets. `None` is a stack without a tag compound.
+/// The most enchantments one stack carries. A table roll gives at most six compatible ones (one
+/// of each exclusion family); `push` past this is DROPPED.
+pub const MAX_ENCH: usize = 6;
+
+/// The `ench` list of a stack (`StoredEnchantments` on an enchanted book): `(id, level)` pairs in
+/// insertion order. A fixed array so a stack stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub struct EnchList {
+    len: u8,
+    e: [(u8, u8); MAX_ENCH],
+}
+
+impl EnchList {
+    pub const EMPTY: EnchList = EnchList { len: 0, e: [(0, 0); MAX_ENCH] };
+
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The pairs, in order.
+    pub fn iter(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
+        self.e[..self.len as usize].iter().copied()
+    }
+
+    /// `(id, level)` appended. Returns false when the list is full (DROPPED: Java's list is
+    /// unbounded).
+    pub fn push(&mut self, id: u8, level: u8) -> bool {
+        if (self.len as usize) < MAX_ENCH {
+            self.e[self.len as usize] = (id, level);
+            self.len += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The level stored for `id`, 0 when absent.
+    pub fn level_of(&self, id: u8) -> i32 {
+        self.iter().find(|(i, _)| *i == id).map_or(0, |(_, l)| l as i32)
+    }
+
+    /// The level slot of `id`.
+    pub fn level_mut(&mut self, id: u8) -> Option<&mut u8> {
+        let n = self.len as usize;
+        self.e[..n].iter_mut().find(|(i, _)| *i == id).map(|(_, l)| l)
+    }
+
+    /// A list from pairs (the saves and the wire); unknown ids and zero levels are skipped.
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (u8, u8)>) -> EnchList {
+        let mut l = EnchList::EMPTY;
+        for (i, v) in pairs {
+            if v > 0 && enchant::exists(i) {
+                l.push(i, v);
+            }
+        }
+        l
+    }
+
+    /// The flat wire form: `MAX_ENCH` id/level byte pairs, zero padded (level 0 is empty).
+    pub fn to_bytes(&self) -> [u8; MAX_ENCH * 2] {
+        let mut b = [0u8; MAX_ENCH * 2];
+        for (n, (i, l)) in self.iter().enumerate() {
+            b[n * 2] = i;
+            b[n * 2 + 1] = l;
+        }
+        b
+    }
+
+    pub fn from_bytes(b: &[u8]) -> EnchList {
+        EnchList::from_pairs(b.chunks_exact(2).take(MAX_ENCH).map(|c| (c[0], c[1])))
+    }
+}
+
+/// The part of `stackTagCompound` this port keeps besides the enchantments: one entry, the one
+/// the stack's creative sub-item sets. `None` is a stack without a tag compound.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum Tag {
     #[default]
     None,
     /// `Potion`: a `PotionType` registry id (`PotionUtils.addPotionToItemStack`).
     Potion(u8),
-    /// `StoredEnchantments` with one entry (`ItemEnchantedBook.getEnchantedItemStack`).
-    StoredEnchant { id: u8, level: u8 },
     /// `EntityTag.id` (`ItemMonsterPlacer.applyEntityIdToItemStack`), as an index into
     /// `creative_table::EGGS`.
     Entity(u8),
@@ -36,15 +115,17 @@ pub struct ItemStack {
     pub damage: i32,
     /// `stackTagCompound`, reduced (see [`Tag`]).
     pub tag: Tag,
+    /// `ench` (`StoredEnchantments` on an enchanted book).
+    pub ench: EnchList,
 }
 
 impl ItemStack {
     /// `ItemStack.EMPTY`
-    pub const EMPTY: ItemStack = ItemStack { item: item::AIR, count: 0, damage: 0, tag: Tag::None };
+    pub const EMPTY: ItemStack = ItemStack { item: item::AIR, count: 0, damage: 0, tag: Tag::None, ench: EnchList::EMPTY };
 
     /// `new ItemStack(item, amount, meta)`: a negative meta becomes 0.
-    pub fn new(item: u16, count: i32, meta: i32) -> ItemStack {
-        ItemStack { item, count, damage: meta.max(0), tag: Tag::None }
+    pub const fn new(item: u16, count: i32, meta: i32) -> ItemStack {
+        ItemStack { item, count, damage: if meta < 0 { 0 } else { meta }, tag: Tag::None, ench: EnchList::EMPTY }
     }
 
     /// This stack with `tag` as its tag compound (`setTagCompound`).
@@ -53,9 +134,45 @@ impl ItemStack {
         self
     }
 
+    /// This stack with `ench` as its enchantment list.
+    pub fn with_ench(mut self, ench: EnchList) -> ItemStack {
+        self.ench = ench;
+        self
+    }
+
     /// `hasTagCompound()`
     pub fn has_tag_compound(&self) -> bool {
-        self.tag != Tag::None
+        self.tag != Tag::None || !self.ench.is_empty()
+    }
+
+    /// `isItemEnchanted()`: a non-empty `ench` list.
+    pub fn is_item_enchanted(&self) -> bool {
+        !self.ench.is_empty()
+    }
+
+    /// `addEnchantment(ench, level)`: appends, with the level cast to a byte as Java does.
+    pub fn add_enchantment(&mut self, id: u8, level: i32) {
+        self.ench.push(id, level as u8);
+    }
+
+    /// `EnchantmentHelper.getEnchantmentLevel(ench, this)`
+    pub fn get_enchantment_level(&self, id: u8) -> i32 {
+        enchant::get_enchantment_level(id, self)
+    }
+
+    /// `isItemEnchantable()`
+    pub fn is_item_enchantable(&self) -> bool {
+        enchant::is_item_enchantable(self)
+    }
+
+    /// `hasEffect()`: the glint. `Item.hasEffect` is `isItemEnchanted()`; `ItemEnchantedBook`
+    /// always, and `ItemAppleGold` also for metadata above 0.
+    pub fn has_effect(&self) -> bool {
+        match self.get_item() {
+            item::ENCHANTED_BOOK => true,
+            item::GOLDEN_APPLE => self.is_item_enchanted() || self.get_metadata() > 0,
+            _ => self.is_item_enchanted(),
+        }
     }
 
     /// `new ItemStack(item)`: one, meta 0.
@@ -116,7 +233,7 @@ impl ItemStack {
 
     /// `copy()`: the tag compound is copied too.
     pub fn copy(&self) -> ItemStack {
-        ItemStack::new(self.item, self.count, self.damage).with_tag(self.tag)
+        ItemStack::new(self.item, self.count, self.damage).with_tag(self.tag).with_ench(self.ench)
     }
 
     /// `splitStack(amount)`: takes up to `amount` off this stack and returns them.
@@ -169,14 +286,28 @@ impl ItemStack {
         self.get_max_stack_size() > 1 && (!self.is_item_stack_damageable() || !self.is_item_damaged())
     }
 
-    /// `attemptDamageItem(amount, rand, damager)` with Unbreaking 0, which never draws from the
-    /// random. Returns whether the stack broke (`itemDamage > getMaxDamage()`).
-    pub fn attempt_damage_item(&mut self, amount: i32) -> bool {
+    /// `attemptDamageItem(amount, rand, damager)`: the Unbreaking roll draws from `rand` only when
+    /// the stack has Unbreaking. Returns whether the stack broke (`itemDamage > getMaxDamage()`).
+    /// DROPPED: the ITEM_DURABILITY_CHANGED advancement trigger.
+    pub fn attempt_damage_item(&mut self, mut amount: i32, rand: &mut JavaRandom) -> bool {
         if !self.is_item_stack_damageable() {
             return false;
         }
-        // DROPPED: the Unbreaking roll (EnchantmentDurability.negateDamage) and the
-        // ITEM_DURABILITY_CHANGED advancement trigger; enchantments live in NBT.
+        if amount > 0 {
+            let i = enchant::get_enchantment_level(ench_id::UNBREAKING, self);
+            let mut j = 0;
+            let mut k = 0;
+            while i > 0 && k < amount {
+                if enchant::negate_damage(self, i, rand) {
+                    j += 1;
+                }
+                k += 1;
+            }
+            amount -= j;
+            if amount <= 0 {
+                return false;
+            }
+        }
         self.damage += amount;
         self.damage > self.get_max_damage()
     }
@@ -184,11 +315,11 @@ impl ItemStack {
     /// `damageItem(amount, entity)`: nothing in creative; a stack that breaks shrinks by one and
     /// its damage resets. Returns whether it broke, where Java calls `renderBrokenItemStack` and
     /// adds the break stat.
-    pub fn damage_item(&mut self, amount: i32, creative: bool) -> bool {
+    pub fn damage_item(&mut self, amount: i32, creative: bool, rand: &mut JavaRandom) -> bool {
         if creative || !self.is_item_stack_damageable() {
             return false;
         }
-        if self.attempt_damage_item(amount) {
+        if self.attempt_damage_item(amount, rand) {
             self.shrink(1);
             self.damage = 0;
             return true;
@@ -222,7 +353,11 @@ impl ItemStack {
 
     /// `isItemStackEqual(other)`: count, item, damage and tag.
     fn is_item_stack_equal(&self, other: &ItemStack) -> bool {
-        self.count == other.count && self.get_item() == other.get_item() && self.damage == other.damage && self.tag == other.tag
+        self.count == other.count
+            && self.get_item() == other.get_item()
+            && self.damage == other.damage
+            && self.tag == other.tag
+            && self.ench == other.ench
     }
 }
 
@@ -248,7 +383,7 @@ pub fn are_item_stack_tags_equal(a: &ItemStack, b: &ItemStack) -> bool {
     if a.is_empty() && b.is_empty() {
         return true;
     }
-    !a.is_empty() && !b.is_empty() && a.tag == b.tag
+    !a.is_empty() && !b.is_empty() && a.tag == b.tag && a.ench == b.ench
 }
 
 /// `ItemStack.areItemStacksEqual(a, b)`: item, damage, count and tag.

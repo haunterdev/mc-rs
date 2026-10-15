@@ -48,6 +48,14 @@ impl Line {
     }
 }
 
+/// What `/effect` does to a player.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PotionOp {
+    Add(items::potion::PotionEffect),
+    Remove(items::potion::Effect),
+    Clear,
+}
+
 /// What a command leaves for the hub to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
@@ -59,8 +67,17 @@ pub enum Effect {
     Broadcast(String),
     Teleport(u32, Teleport),
     GameMode(u32, u8),
+    /// `/kill` on a player (id, name): the game thread kills and the death screen respawns them;
+    /// with no game thread, the old fallback (message and teleport to the respawn point).
+    Kill(u32, String),
+    /// `/effect` on a player (the game thread adds or takes the effect).
+    Potion(u32, PotionOp),
     /// The time or the daylight cycle changed: every viewer's clock jumps to it.
     Time,
+    /// `/difficulty`: the id 0 to 3 is now the world's; the game thread applies it and every viewer is told.
+    Difficulty(u8),
+    /// `/summon`: a mob of this kind at this position (the game thread spawns it).
+    Summon(&'static sim::kinds::Kind, [f64; 3]),
     /// The operator list changed: write it to `server.json`.
     Ops,
     /// Ends a player's session with this line (`/kick`, `/ban`).
@@ -264,6 +281,16 @@ fn world_spawn(world: &World) -> Teleport {
     Teleport { pos: [x as f64 + 0.5, y as f64, z as f64 + 0.5], yaw: 0.0, pitch: 0.0, flags: proto::TP_RESPAWN | proto::TP_SURFACE }
 }
 
+/// Where a dead player comes back: at their `/spawnpoint` exactly (`EntityPlayer.getBedSpawnLocation`
+/// with a forced spawn point), else on the top block at the world spawn
+/// (`PlayerList.recreatePlayerEntity`).
+pub(crate) fn respawn_point(world: &World, name: &str) -> Teleport {
+    match world.player(name).and_then(|s| s.spawn) {
+        Some([x, y, z]) => Teleport { pos: [x as f64 + 0.5, y as f64 + 0.1, z as f64 + 0.5], yaw: 0.0, pitch: 0.0, flags: proto::TP_RESPAWN },
+        None => world_spawn(world),
+    }
+}
+
 /// The page's `chat` message from "" (a system line) marked `"kind": "command"`, with its
 /// vanilla color (white unless the line names one: red errors, gray whispers) and italics, so a
 /// client tells it from the yellow join and leave lines.
@@ -352,9 +379,37 @@ pub fn run(hub: &Hub, sender: &Sender, line: &str) {
                 println!("{text}");
                 hub.tell_all(&chat_json(&Line::plain(text)));
             }
-            Effect::Teleport(id, tp) => send_to(&sessions, id, proto::frame(proto::S_TELEPORT, &tp.encode())),
-            Effect::GameMode(id, m) => send_to(&sessions, id, proto::frame(proto::S_GAMEMODE, &[m])),
+            Effect::Teleport(id, tp) => {
+                send_to(&sessions, id, proto::frame(proto::S_TELEPORT, &tp.encode()));
+                hub.to_game(crate::game::GameMsg::Teleport { id });
+            }
+            Effect::GameMode(id, m) => {
+                send_to(&sessions, id, proto::frame(proto::S_GAMEMODE, &[m]));
+                hub.to_game(crate::game::GameMsg::GameMode { id, mode: m });
+            }
+            Effect::Potion(id, op) => hub.to_game(crate::game::GameMsg::Potion { id, op }),
+            Effect::Kill(id, name) => {
+                if hub.has_game() {
+                    hub.to_game(crate::game::GameMsg::Kill { id });
+                } else {
+                    if hub.world.lock().unwrap().rule("showDeathMessages") != Some("false") {
+                        let text = format!("{name} fell out of the world");
+                        println!("{text}");
+                        hub.tell_all(&chat_json(&Line::plain(text)));
+                    }
+                    let tp = respawn_point(&hub.world.lock().unwrap(), &name);
+                    send_to(&sessions, id, proto::frame(proto::S_TELEPORT, &tp.encode()));
+                }
+            }
+            Effect::Summon(kind, pos) => hub.to_game(crate::game::GameMsg::Summon { kind, pos }),
             Effect::Time => sync_time(hub, true),
+            Effect::Difficulty(d) => {
+                hub.to_game(crate::game::GameMsg::Difficulty { id: d });
+                let frame = proto::frame(proto::S_DIFFICULTY, &[d]);
+                for s in hub.sessions() {
+                    let _ = s.to_viewer.send(frame.clone());
+                }
+            }
             Effect::Ops => {
                 let ops = hub.ops.lock().unwrap().clone();
                 if let Err(e) = crate::config::Config::save_ops(&hub.dir, &ops) {
@@ -431,6 +486,7 @@ pub fn join_frames(hub: &Hub, name: &str, seen_before: bool) -> Vec<u8> {
     w.update_player(name, |_| {});
     let mut out = proto::frame(proto::S_TIME, &w.time_sync(true).encode());
     out.extend(proto::frame(proto::S_GAMEMODE, &[w.game_mode(name)]));
+    out.extend(proto::frame(proto::S_DIFFICULTY, &[w.difficulty.unwrap_or(2)]));
     if !seen_before {
         out.extend(proto::frame(proto::S_TELEPORT, &world_spawn(&w).encode()));
     }

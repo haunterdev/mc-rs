@@ -51,6 +51,8 @@ pub const V_RESPAWN: u8 = 71;
 pub const V_SWAP_HANDS: u8 = 72;
 /// [`SignText`]: the four lines the edit screen closed with (`CPacketUpdateSign`).
 pub const V_SIGN: u8 = 73;
+/// [`EnchantItem`]: a button of the enchanting table (`CPacketEnchantItem`).
+pub const V_ENCHANT: u8 = 74;
 
 /// Server to viewer: [`Health`].
 pub const S_HEALTH: u8 = 160;
@@ -101,6 +103,12 @@ pub const S_EXPLOSION: u8 = 182;
 /// [`SignText`]: a sign's lines, on join for every sign and after each edit
 /// (`SPacketUpdateTileEntity` for a sign).
 pub const S_SIGN: u8 = 183;
+/// [`EntityEffect`]: a potion effect started or changed (`SPacketEntityEffect`).
+pub const S_EFFECT: u8 = 184;
+/// [`RemoveEffect`]: a potion effect ended (`SPacketRemoveEntityEffect`).
+pub const S_REMOVE_EFFECT: u8 = 185;
+/// [`WorldEvent`]: a world event near the viewer (`SPacketEffect`), the jukebox's 1010.
+pub const S_WORLD_EVENT: u8 = 186;
 
 /// `EnumHand`.
 pub const HAND_MAIN: u8 = 0;
@@ -131,6 +139,7 @@ pub const WINDOW_INVENTORY: u8 = 0;
 pub const WK_CRAFTING_TABLE: u8 = 1;
 pub const WK_CHEST: u8 = 2;
 pub const WK_FURNACE: u8 = 3;
+pub const WK_ENCHANTING: u8 = 4;
 
 /// [`Health::flags`]: the player is on fire.
 pub const HEALTH_BURNING: u8 = 1;
@@ -139,6 +148,9 @@ pub const HEALTH_BURNING: u8 = 1;
 pub const OBJ_ITEM: u8 = 2;
 pub const OBJ_ARROW: u8 = 60;
 pub const OBJ_FALLING_BLOCK: u8 = 70;
+/// Vanilla sends an orb as `SPacketSpawnExperienceOrb`; here it is a spawn object of this made-up
+/// type (not a vanilla id) carrying the orb value.
+pub const OBJ_XP_ORB: u8 = 100;
 
 /// [`SpawnMob::kind`]: `EntityList` ids.
 pub const MOB_CREEPER: u16 = 50;
@@ -161,6 +173,10 @@ pub const MM_POWERED: u8 = 32;
 
 /// [`EntityEvent::status`] values survival sends (`SPacketEntityStatus`).
 pub const EV_HURT: u8 = 2;
+/// `EntityLivingBase.attackEntityFrom` sends 36 for drowning and 37 for fire damage, which the
+/// viewer answers with their own hurt sounds.
+pub const EV_HURT_DROWN: u8 = 36;
+pub const EV_HURT_BURN: u8 = 37;
 pub const EV_DEATH: u8 = 3;
 pub const EV_USE_FINISHED: u8 = 9;
 pub const EV_EAT_GRASS: u8 = 10;
@@ -236,7 +252,7 @@ mod tests {
         assert_eq!(Click::decode(&Click { mode: 7, ..Default::default() }.encode()), None);
         assert_eq!(Confirm::decode(&[1, 0, 0, 2]), None);
         let open = OpenWindow { window: 1, kind: WK_FURNACE, rows: 0, pos: [0; 3], title: "container.furnace".into() };
-        assert_eq!(OpenWindow::decode(&OpenWindow { kind: 4, ..open.clone() }.encode()), None);
+        assert_eq!(OpenWindow::decode(&OpenWindow { kind: 5, ..open.clone() }.encode()), None);
         assert_eq!(OpenWindow::decode(&OpenWindow { window: WINDOW_INVENTORY, ..open.clone() }.encode()), None);
         let mut b = SpawnObject::default().encode();
         b[4] = 61;

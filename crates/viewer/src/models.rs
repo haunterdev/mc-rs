@@ -7,7 +7,7 @@ use std::io;
 
 use serde_json::Value;
 
-use crate::blockstates::{blockstate_of, generated_states};
+use crate::blockstates::{blockstate_of, default_blockstate, generated_states, is_multipart_block, multipart_file, multipart_props};
 use crate::item::{self, Display, ItemModel};
 use crate::jar::Jar;
 use crate::textures::{load_sprite, BlockTextures, Sprite, SpriteInfo};
@@ -220,6 +220,17 @@ impl ModelRotation {
     }
 }
 
+/// `FaceBakery.UV_ROTATIONS` by facing and `ModelRotation.ordinal` (x / 90 * 4 + y / 90): 0 is
+/// `UV_ROTATION_0`, 1 `UV_ROTATION_90`, 2 `UV_ROTATION_270`, 3 `UV_ROTATION_INVERSE`.
+const UV_ROTATIONS: [[u8; 16]; 6] = [
+    [0, 2, 3, 1, 0, 0, 0, 0, 0, 1, 3, 2, 3, 3, 3, 3],
+    [0, 1, 3, 2, 3, 3, 3, 3, 0, 2, 3, 1, 0, 0, 0, 0],
+    [0, 0, 0, 0, 3, 1, 0, 2, 3, 3, 3, 3, 3, 2, 0, 1],
+    [0, 0, 0, 0, 0, 1, 3, 2, 3, 3, 3, 3, 0, 2, 3, 1],
+    [0, 0, 0, 0, 2, 2, 2, 2, 3, 3, 3, 3, 1, 1, 1, 1],
+    [0, 0, 0, 0, 1, 1, 1, 1, 3, 3, 3, 3, 2, 2, 2, 2],
+];
+
 /// `BlockFaceUV`.
 #[derive(Clone, Copy, Debug)]
 pub struct FaceUv {
@@ -230,6 +241,27 @@ pub struct FaceUv {
 impl FaceUv {
     fn rotated(&self, i: usize) -> usize {
         (i + (self.rotation / 90) as usize) % 4
+    }
+
+    /// `BlockFaceUV.getVertexRotatedRev`.
+    fn rotated_rev(&self, i: usize) -> usize {
+        (i + (4 - (self.rotation / 90) as usize)) % 4
+    }
+
+    /// `FaceBakery.applyUVLock`: the UVs a quad of `face` keeps when the variant turns by `rot`
+    /// with `uvlock` set, so the texture stays put while the model turns.
+    fn locked(&self, face: Facing, rot: &ModelRotation) -> FaceUv {
+        let kind = UV_ROTATIONS[face as usize][((rot.x / 90) * 4 + rot.y / 90) as usize];
+        let f = self.u(self.rotated_rev(0));
+        let f1 = self.v(self.rotated_rev(0));
+        let f2 = self.u(self.rotated_rev(2));
+        let f3 = self.v(self.rotated_rev(2));
+        match kind {
+            0 => FaceUv { uvs: [f, f1, f2, f3], rotation: 0 },
+            1 => FaceUv { uvs: [16.0 - f1, f2, 16.0 - f3, f], rotation: 90 },
+            2 => FaceUv { uvs: [f3, 16.0 - f, f1, 16.0 - f2], rotation: 270 },
+            _ => FaceUv { uvs: [16.0 - f, 16.0 - f1, 16.0 - f2, 16.0 - f3], rotation: 0 },
+        }
     }
 
     /// `BlockFaceUV.getVertexU`.
@@ -534,7 +566,12 @@ fn rotate_part(p: [f32; 3], r: &PartRotation) -> [f32; 3] {
 
 /// `FaceBakery.makeBakedQuad`.
 pub fn bake_quad(part: &Part, face: Facing, pf: &PartFace, sprite: SpriteInfo, rot: &ModelRotation) -> Quad {
-    // DROPPED: uvlock (FaceBakery.applyUVLock); no blockstate the generated blocks use sets it.
+    bake_quad_locked(part, face, pf, sprite, rot, false)
+}
+
+/// `FaceBakery.makeBakedQuad` with `uvLocked`.
+pub fn bake_quad_locked(part: &Part, face: Facing, pf: &PartFace, sprite: SpriteInfo, rot: &ModelRotation, uv_lock: bool) -> Quad {
+    let face_uv = if uv_lock { pf.uv.locked(face, rot) } else { pf.uv };
     // getPositionsDiv16, indexed by facing.
     let p = [
         part.from[1] / 16.0,
@@ -562,7 +599,7 @@ pub fn bake_quad(part: &Part, face: Facing, pf: &PartFace, sprite: SpriteInfo, r
             rot.rotate_vertex(face, i)
         };
         pos[j] = v;
-        uv[j] = [pf.uv.u(i) / 16.0, pf.uv.v(i) / 16.0];
+        uv[j] = [face_uv.u(i) / 16.0, face_uv.v(i) / 16.0];
     }
     let facing = facing_from_vertices(&pos);
     if part.rotation.is_none() {
@@ -610,6 +647,11 @@ pub struct BakedModel {
 
 /// `ModelBakery.bakeModel`.
 pub fn bake_model(model: &ModelBlock, rot: &ModelRotation, sprite: &dyn Fn(&str) -> io::Result<SpriteInfo>) -> io::Result<BakedModel> {
+    bake_model_locked(model, rot, false, sprite)
+}
+
+/// `ModelBakery.bakeModel(model, rotation, uvLocked)`.
+pub fn bake_model_locked(model: &ModelBlock, rot: &ModelRotation, uv_lock: bool, sprite: &dyn Fn(&str) -> io::Result<SpriteInfo>) -> io::Result<BakedModel> {
     let mut out = BakedModel { ambient_occlusion: model.ambient_occlusion(), ..Default::default() };
     if model.is_texture_present("particle") {
         out.particle = sprite(&model.resolve_texture("particle")).ok();
@@ -617,7 +659,7 @@ pub fn bake_model(model: &ModelBlock, rot: &ModelRotation, sprite: &dyn Fn(&str)
     for part in model.elements() {
         for (f, pf) in &part.faces {
             let s = sprite(&model.resolve_texture(&pf.texture))?;
-            let q = bake_quad(part, *f, pf, s, rot);
+            let q = bake_quad_locked(part, *f, pf, s, rot, uv_lock);
             match pf.cullface {
                 None => out.general.push(q),
                 Some(c) => out.face_quads[rot.rotate_face(c) as usize].push(q),
@@ -638,10 +680,14 @@ pub struct BlockModel {
 impl BlockModel {
     /// `WeightedBakedModel.getRandomModel` with `MathHelper.getPositionRandom(pos)`.
     pub fn pick(&self, x: i32, y: i32, z: i32) -> &BakedModel {
+        self.pick_rand(coordinate_random(x, y, z))
+    }
+
+    /// `WeightedBakedModel.getRandomModel(rand)`: `Math.abs((int) rand >> 16) % totalWeight`.
+    pub fn pick_rand(&self, rand: i64) -> &BakedModel {
         if self.variants.len() == 1 {
             return &self.variants[0].0;
         }
-        let rand = coordinate_random(x, y, z);
         let mut w = ((rand as i32) >> 16).wrapping_abs() % self.total_weight as i32;
         for (m, weight) in &self.variants {
             w -= *weight as i32;
@@ -656,12 +702,191 @@ impl BlockModel {
 /// `MathHelper.getCoordinateRandom`, in `sim::region` beside `Block.getOffset`.
 pub use sim::region::coordinate_random;
 
+/// `ICondition`: the `when` of a multipart selector, over the block's property strings.
+#[derive(Clone, Debug)]
+pub enum Condition {
+    /// `ICondition.TRUE`: a selector without `when`.
+    True,
+    /// `ConditionPropertyValue`: the value may be `!`-negated and hold `|` alternatives.
+    Property { key: String, value: String },
+    /// `ConditionAnd`
+    And(Vec<Condition>),
+    /// `ConditionOr`
+    Or(Vec<Condition>),
+}
+
+impl Condition {
+    /// `Selector.Deserializer.getOrAndCondition`.
+    pub fn parse(json: &Value) -> io::Result<Condition> {
+        let obj = json.as_object().ok_or_else(|| bad("multipart when is not an object".into()))?;
+        if obj.is_empty() {
+            return Err(bad("No elements found in selector".into()));
+        }
+        let list = |v: &Value| -> io::Result<Vec<Condition>> {
+            v.as_array().ok_or_else(|| bad("OR / AND is not an array".into()))?.iter().map(Condition::parse).collect()
+        };
+        if obj.len() == 1 {
+            if let Some(v) = obj.get("OR") {
+                return Ok(Condition::Or(list(v)?));
+            }
+            if let Some(v) = obj.get("AND") {
+                return Ok(Condition::And(list(v)?));
+            }
+        }
+        let props: Vec<Condition> = obj.iter().map(|(k, v)| Condition::property(k, v)).collect::<io::Result<_>>()?;
+        Ok(if props.len() == 1 { props.into_iter().next().expect("one property") } else { Condition::And(props) })
+    }
+
+    /// `Selector.Deserializer.makePropertyValue`: `getAsString` of a string, boolean or number.
+    fn property(key: &str, v: &Value) -> io::Result<Condition> {
+        let value = match v {
+            Value::String(s) => s.clone(),
+            Value::Bool(b) => b.to_string(),
+            Value::Number(n) => n.to_string(),
+            _ => return Err(bad(format!("multipart condition {key} has no scalar value"))),
+        };
+        Ok(Condition::Property { key: key.into(), value })
+    }
+
+    /// `ConditionPropertyValue.getPredicate`'s checks that the block has the property and the
+    /// value is not empty.
+    // DROPPED: the "unknown value" check of `makePredicate`; a value the property lacks never matches.
+    pub fn validate(&self, names: &[&str]) -> io::Result<()> {
+        match self {
+            Condition::True => Ok(()),
+            Condition::Property { key, value } => {
+                if !names.contains(&key.as_str()) {
+                    return Err(bad(format!("multipart condition {key}={value}: block has no property {key}")));
+                }
+                if value.trim_start_matches('!').split('|').all(str::is_empty) {
+                    return Err(bad(format!("multipart condition {key}: has an empty value")));
+                }
+                Ok(())
+            }
+            Condition::And(c) | Condition::Or(c) => c.iter().try_for_each(|c| c.validate(names)),
+        }
+    }
+
+    /// `ICondition.getPredicate(...).apply(state)`; `props` are the state's `name`, `value` strings.
+    pub fn matches(&self, props: &[(&str, &str)]) -> bool {
+        match self {
+            Condition::True => true,
+            Condition::Property { key, value } => {
+                let (negate, v) = match value.strip_prefix('!') {
+                    Some(rest) => (true, rest),
+                    None => (false, value.as_str()),
+                };
+                let have = props.iter().find(|(k, _)| k == key).map(|(_, v)| *v);
+                // Splitter.on('|').omitEmptyStrings()
+                let hit = have.is_some_and(|h| v.split('|').filter(|a| !a.is_empty()).any(|a| a == h));
+                hit != negate
+            }
+            Condition::And(c) => c.iter().all(|c| c.matches(props)),
+            Condition::Or(c) => c.iter().any(|c| c.matches(props)),
+        }
+    }
+}
+
+/// `Selector`: a condition and the variant list it applies.
+#[derive(Clone, Debug)]
+pub struct Selector {
+    pub condition: Condition,
+    pub model: BlockModel,
+}
+
+/// `MultipartBakedModel`: the selectors in file order.
+#[derive(Clone, Debug)]
+pub struct Multipart {
+    pub selectors: Vec<Selector>,
+    /// The first selector's model decides (`MultipartBakedModel` constructor).
+    pub ambient_occlusion: bool,
+}
+
+/// The models a multipart state draws, in selector order.
+pub struct MultipartPick<'a> {
+    pub models: Vec<&'a BakedModel>,
+    pub ambient_occlusion: bool,
+}
+
+impl Multipart {
+    /// `MultipartBakedModel.getQuads`: every selector whose condition matches contributes its
+    /// model, and each one takes the next `rand` (`rand++`).
+    pub fn pick(&self, props: &[(&str, &str)], rand: i64) -> MultipartPick<'_> {
+        let mut rand = rand;
+        let mut models = Vec::new();
+        for s in &self.selectors {
+            if s.condition.matches(props) {
+                models.push(s.model.pick_rand(rand));
+                rand = rand.wrapping_add(1);
+            }
+        }
+        MultipartPick { models, ambient_occlusion: self.ambient_occlusion }
+    }
+}
+
+/// One `Variant` of a variant list, before baking.
+struct VariantSpec {
+    name: String,
+    rot: ModelRotation,
+    uv_lock: bool,
+    weight: u32,
+}
+
+/// `VariantList.Deserializer`: the entries of a variant list (one object or an array), loading
+/// each model into `cache`. `strict` fails on a bad entry; otherwise the entry is skipped.
+fn variant_specs(jar: &Jar, cache: &mut HashMap<String, ModelBlock>, file: &str, list: &Value, strict: bool) -> io::Result<Vec<VariantSpec>> {
+    let entries: Vec<&Value> = match list {
+        Value::Array(a) => a.iter().collect(),
+        v => vec![v],
+    };
+    let mut out = Vec::new();
+    for e in entries {
+        let Some(name) = e.get("model").and_then(Value::as_str) else {
+            if strict {
+                return Err(bad(format!("{file}: variant without model")));
+            }
+            continue;
+        };
+        // Variant.Deserializer: models live under block/.
+        let name = format!("block/{}", strip_namespace(name));
+        let x = e.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let y = e.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
+        let uv_lock = e.get("uvlock").and_then(Value::as_bool).unwrap_or(false);
+        let weight = e.get("weight").and_then(Value::as_u64).unwrap_or(1) as u32;
+        if !cache.contains_key(&name) {
+            match ModelBlock::load(jar, &name) {
+                Ok(m) => {
+                    cache.insert(name.clone(), m);
+                }
+                Err(err) if strict => return Err(err),
+                Err(_) => continue,
+            }
+        }
+        out.push(VariantSpec { name, rot: ModelRotation::new(x.rem_euclid(360), y.rem_euclid(360)), uv_lock, weight: weight.max(1) });
+    }
+    Ok(out)
+}
+
+/// `ModelBakery.bakeModels` for one variant list.
+fn bake_variants(specs: &[VariantSpec], cache: &HashMap<String, ModelBlock>, sprite: &dyn Fn(&str) -> io::Result<SpriteInfo>) -> io::Result<BlockModel> {
+    let mut baked = Vec::new();
+    for v in specs {
+        baked.push((bake_model_locked(&cache[&v.name], &v.rot, v.uv_lock, sprite)?, v.weight));
+    }
+    baked.sort_by(|a, b| b.1.cmp(&a.1));
+    let total_weight = baked.iter().map(|b| b.1).sum();
+    Ok(BlockModel { variants: baked, total_weight })
+}
+
 /// Every block model and sprite the viewer draws.
 pub struct Models {
     /// `(state << 1 | flag)` to `models` index + 1; 0 means the state has no model. `flag` is the
     /// property `getActualState` adds (see [`blockstate_of`]).
     table: Vec<u16>,
     pub models: Vec<BlockModel>,
+    /// State to `multiparts` index + 1, for the blocks whose blockstate is `multipart`.
+    mp_table: Vec<u16>,
+    pub multiparts: Vec<Multipart>,
     pub textures: BlockTextures,
     pub water_still: SpriteInfo,
     pub water_flow: SpriteInfo,
@@ -677,7 +902,7 @@ impl Models {
     pub fn load(jar: &Jar) -> io::Result<Models> {
         // Parse every variant list and model first, so the sprite set is known before baking.
         let mut model_cache: HashMap<String, ModelBlock> = HashMap::new();
-        let mut keyed: Vec<(usize, Vec<(String, ModelRotation, u32)>)> = Vec::new();
+        let mut keyed: Vec<(usize, Vec<VariantSpec>)> = Vec::new();
         let mut variant_lists: HashMap<(String, String), usize> = HashMap::new();
         let mut table = vec![0u16; 1 << 17];
         for s in generated_states() {
@@ -691,27 +916,73 @@ impl Models {
                         .get("variants")
                         .and_then(|v| v.get(&key))
                         .ok_or_else(|| bad(format!("blockstates/{file}.json has no variant {key}")))?;
-                    let entries: Vec<&Value> = match list {
-                        Value::Array(a) => a.iter().collect(),
-                        v => vec![v],
-                    };
-                    let mut variants = Vec::new();
-                    for e in entries {
-                        let name = e.get("model").and_then(Value::as_str).ok_or_else(|| bad(format!("{file}: variant without model")))?;
-                        // Variant.Deserializer: models live under block/.
-                        let name = format!("block/{}", strip_namespace(name));
-                        let x = e.get("x").and_then(Value::as_i64).unwrap_or(0) as i32;
-                        let y = e.get("y").and_then(Value::as_i64).unwrap_or(0) as i32;
-                        let weight = e.get("weight").and_then(Value::as_u64).unwrap_or(1) as u32;
-                        if !model_cache.contains_key(&name) {
-                            model_cache.insert(name.clone(), ModelBlock::load(jar, &name)?);
-                        }
-                        variants.push((name, ModelRotation::new(x.rem_euclid(360), y.rem_euclid(360)), weight.max(1)));
-                    }
-                    keyed.push((idx, variants));
+                    keyed.push((idx, variant_specs(jar, &mut model_cache, &file, list, true)?));
                 }
                 table[((s as usize) << 1) | flag as usize] = idx as u16 + 1;
             }
+        }
+        // Every other state with a model (a block the player places that generation never does):
+        // `default_blockstate`, skipped when its file or variant is missing.
+        let mut files: HashMap<String, Option<Value>> = HashMap::new();
+        for s in 0..(256u16 << 4) {
+            if table[(s as usize) << 1] != 0 {
+                continue;
+            }
+            let Some((file, key)) = default_blockstate(s) else { continue };
+            let n = variant_lists.len();
+            let idx = match variant_lists.get(&(file.clone(), key.clone())) {
+                Some(&i) => i,
+                None => {
+                    let bs = files.entry(file.clone()).or_insert_with(|| jar.json(&format!("blockstates/{file}.json")).ok());
+                    let Some(list) = bs.as_ref().and_then(|b| b.get("variants")).and_then(|v| v.get(&key)) else { continue };
+                    let variants = variant_specs(jar, &mut model_cache, &file, list, false)?;
+                    if variants.is_empty() {
+                        continue;
+                    }
+                    variant_lists.insert((file, key), n);
+                    keyed.push((n, variants));
+                    n
+                }
+            };
+            table[(s as usize) << 1] = idx as u16 + 1;
+            table[((s as usize) << 1) | 1] = idx as u16 + 1;
+        }
+
+        // The multipart blockstates (fences, panes, walls, bars, fire, redstone wire, chorus
+        // plant, brewing stand): one selector list per file.
+        let mut mp_table = vec![0u16; 1 << 16];
+        let mut mp_files: HashMap<String, usize> = HashMap::new();
+        let mut mp_specs: Vec<Vec<(Condition, Vec<VariantSpec>)>> = Vec::new();
+        for s in 0..(256u16 << 4) {
+            if !is_multipart_block(s >> 4) {
+                continue;
+            }
+            let Some(file) = multipart_file(s) else { continue };
+            let idx = match mp_files.get(&file) {
+                Some(&i) => i,
+                None => {
+                    let bs = jar.json(&format!("blockstates/{file}.json"))?;
+                    let parts = bs
+                        .get("multipart")
+                        .and_then(Value::as_array)
+                        .ok_or_else(|| bad(format!("blockstates/{file}.json has no multipart")))?;
+                    let names: Vec<&str> = multipart_props(s >> 4, 0).iter().map(|p| p.0).collect();
+                    let mut selectors = Vec::new();
+                    for part in parts {
+                        let condition = match part.get("when") {
+                            Some(w) => Condition::parse(w)?,
+                            None => Condition::True,
+                        };
+                        condition.validate(&names)?;
+                        let apply = part.get("apply").ok_or_else(|| bad(format!("{file}: selector without apply")))?;
+                        selectors.push((condition, variant_specs(jar, &mut model_cache, &file, apply, true)?));
+                    }
+                    mp_specs.push(selectors);
+                    mp_files.insert(file, mp_specs.len() - 1);
+                    mp_specs.len() - 1
+                }
+            };
+            mp_table[s as usize] = idx as u16 + 1;
         }
 
         let item_sources = item::load_sources(jar)?;
@@ -721,6 +992,7 @@ impl Models {
             .collect();
         names.extend(model_cache.values().filter(|m| m.is_texture_present("particle")).map(|m| m.resolve_texture("particle")));
         names.extend(FLUID_SPRITES.iter().map(|s| s.to_string()));
+        names.extend(crate::textures::DESTROY_SPRITES.iter().map(|s| s.to_string()));
         names.extend(item::sprite_names(&item_sources));
         names.sort();
         names.dedup();
@@ -732,21 +1004,27 @@ impl Models {
         keyed.sort_by_key(|(i, _)| *i);
         let mut models = Vec::new();
         for (_, variants) in keyed {
+            models.push(bake_variants(&variants, &model_cache, &sprite)?);
+        }
+        let mut multiparts = Vec::new();
+        for selectors in mp_specs {
             let mut baked = Vec::new();
-            for (name, rot, weight) in variants {
-                baked.push((bake_model(&model_cache[&name], &rot, &sprite)?, weight));
+            for (condition, specs) in selectors {
+                baked.push(Selector { condition, model: bake_variants(&specs, &model_cache, &sprite)? });
             }
-            baked.sort_by(|a, b| b.1.cmp(&a.1));
-            let total_weight = baked.iter().map(|b| b.1).sum();
-            models.push(BlockModel { variants: baked, total_weight });
+            let ambient_occlusion = baked.first().is_some_and(|s| s.model.variants[0].0.ambient_occlusion);
+            multiparts.push(Multipart { selectors: baked, ambient_occlusion });
         }
         let [ws, wf, ls, lf] = FLUID_SPRITES.map(|n| textures.get(n).expect("fluid sprite loaded"));
         let items = item::bake_items(&item_sources, &textures)?;
-        Ok(Models { table, models, textures, water_still: ws, water_flow: wf, lava_still: ls, lava_flow: lf, items })
+        Ok(Models { table, models, mp_table, multiparts, textures, water_still: ws, water_flow: wf, lava_still: ls, lava_flow: lf, items })
     }
 
     /// The digging particle sprite of a state: its first variant's `#particle`.
     pub fn particle(&self, state: u16) -> Option<SpriteInfo> {
+        if let Some(mp) = self.multipart(state) {
+            return mp.selectors.first().and_then(|s| s.model.variants.first()).and_then(|v| v.0.particle);
+        }
         self.get(state, false).and_then(|m| m.variants.first()).and_then(|v| v.0.particle)
     }
 
@@ -755,6 +1033,25 @@ impl Models {
             0 => None,
             i => Some(&self.models[i as usize - 1]),
         }
+    }
+
+    fn multipart(&self, state: u16) -> Option<&Multipart> {
+        match self.mp_table[state as usize] {
+            0 => None,
+            i => Some(&self.multiparts[i as usize - 1]),
+        }
+    }
+
+    /// Whether the state's blockstate is `multipart`, drawn through [`Models::get_multipart`].
+    pub fn is_multipart(&self, state: u16) -> bool {
+        self.mp_table[state as usize] != 0
+    }
+
+    /// The models of a multipart state whose `getActualState` properties are `mask`
+    /// ([`multipart_props`]); `rand` is `MathHelper.getPositionRandom(pos)`.
+    pub fn get_multipart(&self, state: u16, mask: u16, rand: i64) -> Option<MultipartPick<'_>> {
+        let mp = self.multipart(state)?;
+        Some(mp.pick(&multipart_props(state >> 4, mask), rand))
     }
 }
 
@@ -915,5 +1212,96 @@ mod tests {
         let grass = models.get(worldgen::blocks::state(worldgen::blocks::id::TALLGRASS, 1), false).unwrap();
         assert_eq!(grass.variants[0].0.general.len(), 4);
         assert!(grass.variants[0].0.general.iter().all(|q| q.tint == 0 && q.shade == 255));
+    }
+
+    #[test]
+    fn the_farming_blocks_resolve_to_drawn_models() {
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        use worldgen::blocks::{id, state};
+        // Crop ages: wheat, carrots and potatoes 0 to 7, beetroots 0 to 3; farmland's moisture 0 to 7.
+        let cases = [(id::WHEAT, 8), (id::CARROTS, 8), (id::POTATOES, 8), (id::BEETROOTS, 4), (id::FARMLAND, 8)];
+        for (block, count) in cases {
+            for meta in 0..count {
+                let s = state(block, meta);
+                let m = models.get(s, false).unwrap_or_else(|| panic!("block {block}:{meta} has no model"));
+                let b = &m.variants[0].0;
+                let quads = b.general.len() + b.face_quads.iter().map(|q| q.len()).sum::<usize>();
+                assert!(quads > 0, "block {block}:{meta} bakes no quads");
+            }
+        }
+    }
+
+    /// A block with a model renders; one with none is invisible while its neighbors cull
+    /// against it (the x-ray sponge), so every Model state of every block has a baked model, a
+    /// multipart one included.
+    /// DROPPED: the metas the block's `getStateFromMeta` never produces in the world.
+    #[test]
+    fn every_model_state_has_a_baked_model() {
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        let unreachable = |b: u16, m: u16| match b {
+            3 => m >= 3,
+            5 | 125 => m >= 6,
+            126 | 175 => matches!(m & 7, 6 | 7),
+            181 | 182 => m & 7 >= 1,
+            _ => false,
+        };
+        let mut missing = Vec::new();
+        for s in 0..(256u16 << 4) {
+            let (b, m) = (s >> 4, s & 15);
+            if sim::states::render_type(s) == sim::states::RenderType::Model
+                && !unreachable(b, m)
+                && models.get(s, false).is_none()
+                && models.get_multipart(s, 0, 0).is_none()
+            {
+                missing.push(format!("{b}:{m} {}", sim::states::block_name(b).unwrap_or("?")));
+            }
+        }
+        assert!(missing.is_empty(), "no model: {missing:?}");
+    }
+
+    #[test]
+    fn conditions_read_when_like_vanilla() {
+        let json = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        let p = [("north", "true"), ("east", "false"), ("wire", "side")];
+        let c = |s: &str| Condition::parse(&json(s)).unwrap();
+        // ConditionPropertyValue: a boolean in the file is the string "true".
+        assert!(c(r#"{"north": true}"#).matches(&p));
+        assert!(c(r#"{"north": "true"}"#).matches(&p));
+        assert!(!c(r#"{"east": true}"#).matches(&p));
+        // Several keys are ConditionAnd.
+        assert!(c(r#"{"north": true, "east": false}"#).matches(&p));
+        assert!(!c(r#"{"north": true, "east": true}"#).matches(&p));
+        // OR and AND lists of conditions.
+        assert!(c(r#"{"OR": [{"east": true}, {"north": true}]}"#).matches(&p));
+        assert!(!c(r#"{"AND": [{"east": true}, {"north": true}]}"#).matches(&p));
+        // `|` alternatives and `!` negation, over the whole alternative list.
+        assert!(c(r#"{"wire": "side|up"}"#).matches(&p));
+        assert!(!c(r#"{"wire": "none|up"}"#).matches(&p));
+        assert!(c(r#"{"wire": "!none|up"}"#).matches(&p));
+        assert!(!c(r#"{"wire": "!side|up"}"#).matches(&p));
+        assert!(Condition::parse(&json("{}")).is_err());
+        assert!(c(r#"{"north": true}"#).validate(&["north"]).is_ok());
+        assert!(c(r#"{"north": true}"#).validate(&["east"]).is_err());
+    }
+
+    #[test]
+    fn uv_lock_keeps_the_texture_still_under_a_turn() {
+        // fence_side with y 90 and uvlock: the up face is `UV_ROTATION_90` at X0_Y90, so an
+        // unrotated face stays unrotated and the locked one comes back turned.
+        let uv = FaceUv { uvs: [2.0, 4.0, 6.0, 8.0], rotation: 0 };
+        let same = uv.locked(Facing::North, &ModelRotation::new(0, 90));
+        assert_eq!((same.uvs, same.rotation), ([2.0, 4.0, 6.0, 8.0], 0));
+        let up = uv.locked(Facing::Up, &ModelRotation::new(0, 90));
+        assert_eq!((up.uvs, up.rotation), ([16.0 - 4.0, 6.0, 16.0 - 8.0, 2.0], 90));
+        let inv = uv.locked(Facing::Up, &ModelRotation::new(0, 180));
+        assert_eq!(inv.uvs, [14.0, 12.0, 10.0, 8.0]);
     }
 }

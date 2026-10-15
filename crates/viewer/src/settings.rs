@@ -375,6 +375,9 @@ pub struct Menu {
     pub persist: bool,
     /// `--menu`: open it on the first frame, for a `--shot` of the menu.
     pub open_at_start: bool,
+    /// The label of the button beside Done that ends the game (`GuiIngameMenu`'s "Disconnect"
+    /// or "Quit Game"); `None` leaves Done alone.
+    pub quit: Option<&'static str>,
 }
 
 #[derive(Component)]
@@ -385,6 +388,9 @@ pub struct OptLabel(Opt);
 
 #[derive(Component)]
 pub struct DoneButton;
+
+#[derive(Component)]
+pub struct QuitButton;
 
 /// `GuiButton.drawButton` text colors: 14737632, and 16777120 under the pointer.
 const TEXT: Color = Color::srgb_u8(0xe0, 0xe0, 0xe0);
@@ -480,7 +486,7 @@ fn menu_scale(width: u32, height: u32) -> f32 {
 
 /// The menu in GUI pixels at [`menu_scale`], two columns as `GuiOptions` lays them out: option
 /// `i` in column `i % 2`, so an odd last one sits on the left.
-fn spawn_menu(commands: &mut Commands, widgets: &GuiWidgets, s: &Settings, window: &Window) {
+fn spawn_menu(commands: &mut Commands, widgets: &GuiWidgets, s: &Settings, window: &Window, quit: Option<&'static str>, camera: Option<Entity>) {
     let unit = menu_scale(window.physical_width(), window.physical_height()) / window.scale_factor();
     let root = commands
         .spawn((
@@ -502,6 +508,9 @@ fn spawn_menu(commands: &mut Commands, widgets: &GuiWidgets, s: &Settings, windo
             GlobalZIndex(10),
         ))
         .id();
+    if let Some(camera) = camera {
+        commands.entity(root).insert(UiTargetCamera(camera));
+    }
     let title = commands
         .spawn((
             Text::new("Options"),
@@ -529,9 +538,23 @@ fn spawn_menu(commands: &mut Commands, widgets: &GuiWidgets, s: &Settings, windo
             Node { margin: UiRect::vertical(px(4.0 * unit)), ..default() },
         ))
         .id();
-    let done = button(commands, widgets, text("Done".into(), unit), DONE_W, unit);
-    commands.entity(done).insert(DoneButton);
-    commands.entity(root).add_children(&[title, grid, hint, done]);
+    // With a quit button, Done and it share the last row at option width.
+    let bottom = match quit {
+        None => {
+            let done = button(commands, widgets, text("Done".into(), unit), DONE_W, unit);
+            commands.entity(done).insert(DoneButton).id()
+        }
+        Some(label) => {
+            let done = button(commands, widgets, text("Done".into(), unit), OPT_W, unit);
+            commands.entity(done).insert(DoneButton);
+            let quit = button(commands, widgets, text(label.into(), unit), OPT_W, unit);
+            commands.entity(quit).insert(QuitButton);
+            let row = commands.spawn(Node { flex_direction: FlexDirection::Row, ..default() }).id();
+            commands.entity(row).add_children(&[done, quit]);
+            row
+        }
+    };
+    commands.entity(root).add_children(&[title, grid, hint, bottom]);
 }
 
 /// Esc and Done open and close the menu; [`crate::input::focus`] frees or grabs the mouse to
@@ -548,7 +571,21 @@ pub fn toggle_menu(
     widgets: Res<GuiWidgets>,
     roots: Query<Entity, With<MenuRoot>>,
     done: Query<&Interaction, (Changed<Interaction>, With<DoneButton>)>,
+    quit: Query<&Interaction, (Changed<Interaction>, With<QuitButton>)>,
+    mut exit: MessageWriter<AppExit>,
+    death: Option<Res<crate::survival::death::DeathScreen>>,
+    screen_camera: Option<Res<crate::chat::ScreenCamera>>,
 ) {
+    // GuiGameOver ignores Esc (keyTyped does nothing) and owns the mouse.
+    if death.is_some_and(|d| d.open.is_some()) {
+        return;
+    }
+    // Quit ends the app: a native session's socket closes with the process, which the server
+    // takes as the player leaving.
+    if menu.open && quit.iter().any(|i| *i == Interaction::Pressed) {
+        exit.write(AppExit::Success);
+        return;
+    }
     let clicked_done = done.iter().any(|i| *i == Interaction::Pressed);
     let lost_focus = focus.in_game && !window.focused && !menu.open;
     // Read before writing: a ResMut write marks Menu changed, and input::focus drops every
@@ -562,7 +599,7 @@ pub fn toggle_menu(
     }
     menu.open = !menu.open;
     if menu.open {
-        spawn_menu(&mut commands, &widgets, &settings, &window);
+        spawn_menu(&mut commands, &widgets, &settings, &window, menu.quit, screen_camera.map(|c| c.0));
     } else {
         for e in &roots {
             commands.entity(e).despawn();

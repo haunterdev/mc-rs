@@ -56,6 +56,10 @@ pub fn send_click(link: &Link, m: &proto::Click) {
     link.send(proto::V_CLICK, &m.encode());
 }
 
+pub fn send_enchant(link: &Link, m: &proto::EnchantItem) {
+    link.send(proto::V_ENCHANT, &m.encode());
+}
+
 pub fn send_close(link: &Link, m: &proto::CloseWindow) {
     link.send(proto::V_CLOSE, &m.encode());
 }
@@ -72,10 +76,9 @@ pub fn wire_stack(s: &::items::ItemStack) -> proto::WireStack {
     let tag = match s.tag {
         ::items::Tag::None => [0, 0, 0],
         ::items::Tag::Potion(p) => [1, p, 0],
-        ::items::Tag::StoredEnchant { id, level } => [2, id, level],
         ::items::Tag::Entity(e) => [3, e, 0],
     };
-    proto::WireStack { tag, ..proto::WireStack::new(s.item as i16, s.count.clamp(0, 255) as u8, s.damage.clamp(0, u16::MAX as i32) as u16) }
+    proto::WireStack { tag, ench: s.ench.to_bytes(), ..proto::WireStack::new(s.item as i16, s.count.clamp(0, 255) as u8, s.damage.clamp(0, u16::MAX as i32) as u16) }
 }
 
 pub fn send_respawn(link: &Link) {
@@ -124,6 +127,9 @@ fn decode_into(world: &mut World, tag: u8, b: &[u8]) -> Option<()> {
         proto::S_BLOCK_ACTION => put(world, proto::BlockAction::decode(b).map(BlockAction)),
         proto::S_SOUND => put(world, proto::Sound::decode(b).map(Sound)),
         proto::S_EXPLOSION => put(world, proto::Explosion::decode(b).map(Explosion)),
+        proto::S_EFFECT => put(world, proto::EntityEffect::decode(b).map(EffectIn)),
+        proto::S_REMOVE_EFFECT => put(world, proto::RemoveEffect::decode(b).map(EffectOut)),
+        proto::S_WORLD_EVENT => put(world, proto::WorldEvent::decode(b).map(WorldEvent)),
         _ => None,
     }
 }
@@ -151,10 +157,10 @@ mod tests {
     #[test]
     fn survival_frames_become_messages() {
         let mut app = app();
-        let health = proto::Health { health: 7.5, food: 12, saturation: 1.5, air: 120, flags: proto::HEALTH_BURNING };
+        let health = proto::Health { health: 7.5, food: 12, saturation: 1.5, air: 120, flags: proto::HEALTH_BURNING, absorption: 2.0 };
         let xp = proto::Xp { bar: 0.25, level: 3, total: 40 };
         let moves = vec![
-            proto::EntityMove { id: 4, pos: [1.0, 64.0, -2.5], yaw: 90.0, pitch: 0.0, head_yaw: 45.0, on_ground: true },
+            proto::EntityMove { id: 4, pos: [1.0, 64.0, -2.5], yaw: 90.0, pitch: 0.0, head_yaw: 45.0, on_ground: true, teleport: false },
             proto::EntityMove { id: 5, pos: [0.0, 70.0, 0.0], ..Default::default() },
         ];
         let vel = proto::Velocity { id: 4, motion: [0.0, 0.42, 0.0] };
@@ -186,7 +192,7 @@ mod tests {
     fn death_holds_until_health_returns() {
         let mut app = app();
         assert_eq!(*app.world().resource::<SurvivalState>(), SurvivalState::default());
-        let dead = proto::Health { health: 0.0, food: 20, saturation: 5.0, air: 300, flags: 0 };
+        let dead = proto::Health { health: 0.0, food: 20, saturation: 5.0, air: 300, flags: 0, absorption: 0.0 };
         let death = proto::Death { message: "xy fell from a high place".into() };
         app.world_mut().resource_mut::<Inbox>().0.extend([(proto::S_HEALTH, dead.encode()), (proto::S_DEATH, death.encode())]);
         app.update();

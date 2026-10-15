@@ -11,7 +11,7 @@ use bevy::pbr::{MaterialPipeline, MaterialPipelineKey};
 use bevy::prelude::*;
 use bevy::reflect::TypePath;
 use bevy::render::render_resource::{
-    AsBindGroup, ColorWrites, CompareFunction, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
+    AsBindGroup, BlendComponent, BlendFactor, BlendOperation, BlendState, ColorWrites, CompareFunction, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
 };
 use bevy::shader::ShaderRef;
 
@@ -59,17 +59,20 @@ pub struct ChunkMaterial {
     #[texture(3, sample_type = "float", filterable = false)]
     pub env: Handle<Image>,
     pub alpha_mode: AlphaMode,
+    /// The crack overlay: `blendFunc(DST_COLOR, SRC_COLOR)` with a polygon offset of -3.
+    pub crack: bool,
 }
 
 #[repr(C)]
 #[derive(Eq, PartialEq, Hash, Copy, Clone)]
 pub struct ChunkKey {
     translucent: bool,
+    crack: bool,
 }
 
 impl From<&ChunkMaterial> for ChunkKey {
     fn from(m: &ChunkMaterial) -> Self {
-        ChunkKey { translucent: matches!(m.alpha_mode, AlphaMode::Blend) }
+        ChunkKey { translucent: matches!(m.alpha_mode, AlphaMode::Blend), crack: m.crack }
     }
 }
 
@@ -110,6 +113,22 @@ impl Material for ChunkMaterial {
             fragment.shader_defs.extend(defs.map(Into::into));
             if key.bind_group_data.translucent {
                 fragment.shader_defs.push("ALPHA_TEST_TENTH".into());
+            }
+            if key.bind_group_data.crack {
+                fragment.shader_defs.push("CRACK".into());
+                // `GlStateManager.tryBlendFuncSeparate(774, 768, 1, 0)`: result = src * dst + dst * src.
+                for t in fragment.targets.iter_mut().flatten() {
+                    t.blend = Some(BlendState {
+                        color: BlendComponent { src_factor: BlendFactor::Dst, dst_factor: BlendFactor::Src, operation: BlendOperation::Add },
+                        alpha: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::Zero, operation: BlendOperation::Add },
+                    });
+                }
+                // `GlStateManager.doPolygonOffset(-3, -3)`; the depth buffer is reversed, so the sign flips.
+                if let Some(ds) = descriptor.depth_stencil.as_mut() {
+                    ds.depth_write_enabled = Some(false);
+                    ds.bias.constant = 3;
+                    ds.bias.slope_scale = 3.0;
+                }
             }
         }
         Ok(())
@@ -267,14 +286,20 @@ pub struct ItemParams {
     pub w0: Vec4,
     pub w1: Vec4,
     /// x: lighting on (`isGui3d` in the GUI, always in the hand); y: in the hand; z: dimmed under
-    /// the options menu.
+    /// the options menu; w: in the world, in another player's hand (players/held.rs), where w0
+    /// and w1 are the world's item lights with the lightmap coordinates (block, sky) in their w.
     pub flags: UVec4,
+    /// x: the glint pass (`RenderItem.renderEffect`, drawn over the item); y and z: the scroll of
+    /// its two layers, set each frame by item_render.rs.
+    pub glint: Vec4,
 }
 
 /// A block item in the GUI or the hand (item_render.rs): the block texture array at its top
 /// level, blended with depth writes on as `RenderItem.renderItemModel` leaves them.
-/// DROPPED: the enchantment glint (`renderEffect`) and the front-face cull for a negative scale.
+/// DROPPED: the front-face cull for a negative scale, and the glint's atlas-wide texture
+/// coordinates (the glint scrolls over each sprite's own 0 to 1).
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+#[bind_group_data(ItemKey)]
 pub struct ItemMaterial {
     #[uniform(0)]
     pub params: ChunkParams,
@@ -285,6 +310,23 @@ pub struct ItemMaterial {
     pub env: Handle<Image>,
     #[uniform(4)]
     pub item: ItemParams,
+    /// `textures/misc/enchanted_item_glint.png`
+    #[texture(5)]
+    #[sampler(6)]
+    pub glint: Handle<Image>,
+}
+
+/// Whether the material is the glint pass.
+#[repr(C)]
+#[derive(Eq, PartialEq, Hash, Copy, Clone)]
+pub struct ItemKey {
+    glint: bool,
+}
+
+impl From<&ItemMaterial> for ItemKey {
+    fn from(m: &ItemMaterial) -> Self {
+        ItemKey { glint: m.item.glint.x != 0.0 }
+    }
 }
 
 impl Material for ItemMaterial {
@@ -304,14 +346,35 @@ impl Material for ItemMaterial {
         false
     }
 
+    /// The glint draws after the item it covers.
+    fn depth_bias(&self) -> f32 {
+        if self.item.glint.x != 0.0 {
+            1.0e3
+        } else {
+            0.0
+        }
+    }
+
     fn specialize(
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if let Some(ds) = descriptor.depth_stencil.as_mut() {
-            ds.depth_write_enabled = Some(true);
+            ds.depth_write_enabled = Some(!key.bind_group_data.glint);
+        }
+        if key.bind_group_data.glint {
+            // `GlStateManager.blendFunc(SRC_COLOR, ONE)` with the depth test on the item's own
+            // depth and no depth write.
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                for t in fragment.targets.iter_mut().flatten() {
+                    t.blend = Some(BlendState {
+                        color: BlendComponent { src_factor: BlendFactor::Src, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+                        alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -369,8 +432,23 @@ pub struct EntityMaterial {
     #[sampler(2)]
     pub skin: Handle<Image>,
     /// Lightmap coordinates (block, sky) in 0..240, in x and y.
+    /// In z the red hurt overlay strength, in w the white `getColorMultiplier` flash strength.
     #[uniform(3)]
     pub light: Vec4,
+    /// A layer's own look: x and y added to the texture coordinates (`LayerCreeperCharge`'s
+    /// texture matrix, a fire frame), z the color multiplier of an unlit draw, w the flags
+    /// (bit 0 no lighting from the normal, bit 1 fog toward black as `setupFogColor(true)`).
+    #[uniform(4)]
+    pub fx: Vec4,
+    /// `blendFunc(ONE, ONE)`: the spider eyes and the creeper charge.
+    pub additive: bool,
+}
+
+impl EntityMaterial {
+    /// The plain entity draw: no texture offset, normal lighting, alpha tested.
+    pub fn new(env: Handle<Image>, skin: Handle<Image>) -> EntityMaterial {
+        EntityMaterial { env, skin, light: Vec4::new(0.0, 240.0, 0.0, 0.0), fx: Vec4::ZERO, additive: false }
+    }
 }
 
 impl Material for EntityMaterial {
@@ -379,7 +457,11 @@ impl Material for EntityMaterial {
     }
 
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Mask(0.1)
+        if self.additive {
+            AlphaMode::Add
+        } else {
+            AlphaMode::Mask(0.1)
+        }
     }
 
     fn enable_prepass() -> bool {

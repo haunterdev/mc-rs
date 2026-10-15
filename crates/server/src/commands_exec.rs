@@ -5,7 +5,7 @@
 use proto::Teleport;
 
 use super::backup_cmds::{BACKUP, ROLLBACK};
-use super::{usage, world_spawn, Command, Ctx, Line, Perm, Effect, PERMISSION, R, UNKNOWN};
+use super::{usage, world_spawn, Command, Ctx, Line, Perm, Effect, PotionOp, PERMISSION, R, UNKNOWN};
 use crate::bans::Ban;
 use crate::world::DEFAULT_RULES;
 
@@ -30,6 +30,7 @@ fn first(_: &[&str]) -> Option<usize> {
 const KICK: &str = "/kick <player> [reason ...]";
 /// Vanilla's `/ban <name> [reason ...]` with `ip true|false` after the name.
 const BAN: &str = "/ban <name> [ip true|false] [reason ...]";
+const SUMMON: &str = "/summon <entityName> [x] [y] [z] [dataTag]";
 const BAN_IP: &str = "/ban-ip <address|name> [reason ...]";
 const NOT_ONLINE: &str ="You have entered an invalid IP address or a player that is not online";
 
@@ -40,6 +41,8 @@ pub(super) const COMMANDS: &[Command] = &[
     Command { name: "ban-ip", aliases: &[], usage: BAN_IP, perm: Perm::OpsOnly, user: none, run: |c, a| c.ban_ip(a) },
     Command { name: "banlist", aliases: &[], usage: "/banlist [ips|players]", perm: Perm::OpsOnly, user: none, run: |c, a| c.banlist(a) },
     Command { name: "deop", aliases: &[], usage: "/deop <player>", perm: Perm::OpsOnly, user: none, run: |c, a| c.deop(a) },
+    Command { name: "difficulty", aliases: &[], usage: "/difficulty <peaceful|easy|normal|hard>", perm: Perm::Ops, user: none, run: |c, a| c.difficulty(a) },
+    Command { name: "effect", aliases: &[], usage: "/effect <player> <effect> [seconds] [amplifier] [hideParticles] or /effect <player> clear", perm: Perm::Ops, user: first, run: |c, a| c.effect(a) },
     Command { name: "gamemode", aliases: &[], usage: "/gamemode <mode> [player]", perm: Perm::Ops, user: |_| Some(1), run: |c, a| c.gamemode(a) },
     Command { name: "gamerule", aliases: &[], usage: "/gamerule <rule name> [value]", perm: Perm::Ops, user: none, run: |c, a| c.gamerule(a) },
     Command { name: "help", aliases: &["?"], usage: "/help [page|command name]", perm: Perm::All, user: none, run: |c, a| c.help(a) },
@@ -57,6 +60,7 @@ pub(super) const COMMANDS: &[Command] = &[
     Command { name: "spawn", aliases: &[], usage: "/spawn [player]", perm: Perm::All, user: first, run: |c, a| c.spawn(a) },
     Command { name: "spawnpoint", aliases: &[], usage: "/spawnpoint [player] [<x> <y> <z>]", perm: Perm::Ops, user: first, run: |c, a| c.spawnpoint(a) },
     Command { name: "teleport", aliases: &[], usage: "/teleport <entity> <x> <y> <z> [<y-rot> <x-rot>]", perm: Perm::Ops, user: first, run: |c, a| c.teleport(a) },
+    Command { name: "summon", aliases: &[], usage: SUMMON, perm: Perm::Ops, user: none, run: |c, a| c.summon(a) },
     Command { name: "tell", aliases: &["msg", "w"], usage: "/tell <player> <private message ...>", perm: Perm::All, user: first, run: |c, a| c.tell(a) },
     Command { name: "time", aliases: &[], usage: "/time <set|add|query> <value>", perm: Perm::Ops, user: none, run: |c, a| c.time(a) },
     Command {
@@ -324,7 +328,7 @@ impl Ctx<'_> {
     }
 
     /// `CommandGameMode`. The mode is kept per player and sent to their session, which allows
-    /// flying in creative and spectator only; survival play itself is not built yet.
+    /// flying in creative and spectator only.
     fn gamemode(&mut self, args: &[&str]) -> R {
         if args.is_empty() {
             return Err(usage("/gamemode <mode> [player]"));
@@ -336,14 +340,6 @@ impl Ctx<'_> {
         self.effects.push(Effect::GameMode(id, mode));
         if self.feedback_on() {
             self.effects.push(Effect::Tell(id, Line::plain(format!("Your game mode has been updated to {}", mode_name(mode)))));
-            let note = match mode {
-                proto::GM_SURVIVAL | proto::GM_ADVENTURE => Some("Survival play is not built yet: you keep creative building, but cannot fly."),
-                proto::GM_SPECTATOR => Some("Spectator play is not built yet: you fly, but still collide and build."),
-                _ => None,
-            };
-            if let Some(note) = note {
-                self.effects.push(Effect::Tell(id, Line::colored(note, "gray")));
-            }
         }
         if Some(id) == self.sender.id {
             self.notify(format!("Set own game mode to {}", mode_name(mode)));
@@ -354,6 +350,25 @@ impl Ctx<'_> {
     }
 
     /// `CommandGameRule`
+    /// `CommandDifficulty`: a name, its first letter or the id 0 to 3 sets `WorldInfo.difficulty`.
+    fn difficulty(&mut self, args: &[&str]) -> R {
+        let u = || usage("/difficulty <peaceful|easy|normal|hard>");
+        if args.len() != 1 {
+            return Err(u());
+        }
+        let (id, name) = match args[0].to_ascii_lowercase().as_str() {
+            "peaceful" | "p" | "0" => (0u8, "Peaceful"),
+            "easy" | "e" | "1" => (1, "Easy"),
+            "normal" | "n" | "2" => (2, "Normal"),
+            "hard" | "h" | "3" => (3, "Hard"),
+            _ => return Err(u()),
+        };
+        self.world.difficulty = Some(id);
+        self.effects.push(Effect::Difficulty(id));
+        self.notify(format!("Set game difficulty to {name}"));
+        Ok(())
+    }
+
     fn gamerule(&mut self, args: &[&str]) -> R {
         match args {
             [] => {
@@ -408,6 +423,49 @@ impl Ctx<'_> {
         Ok(())
     }
 
+    /// `CommandEffect`. DROPPED: the failures that need the target's effect list ("has no effects
+    /// to remove", "Couldn't take ... as ... doesn't have it"), which the game thread would have
+    /// to answer, and non-player targets.
+    fn effect(&mut self, args: &[&str]) -> R {
+        use items::potion::{Effect as Fx, PotionEffect};
+        if args.len() < 2 {
+            return Err(usage("/effect <player> <effect> [seconds] [amplifier] [hideParticles] or /effect <player> clear"));
+        }
+        let k = self.player(args[0])?;
+        let (id, name) = (self.players[k].id, self.players[k].name.clone());
+        if args[1].eq_ignore_ascii_case("clear") {
+            self.effects.push(Effect::Potion(id, PotionOp::Clear));
+            self.notify(format!("Took all effects from {name}"));
+            return Ok(());
+        }
+        let potion = match args[1].parse::<i32>() {
+            Ok(n) => Fx::from_id(n),
+            Err(_) => Fx::from_name(args[1]),
+        }
+        .ok_or_else(|| format!("There is no such mob effect with ID {}", args[1]))?;
+        let (mut ticks, mut seconds, mut amplifier) = (600, 30, 0);
+        if args.len() >= 3 {
+            seconds = parse_int(args[2], 0, 1_000_000)?;
+            ticks = if potion.is_instant() { seconds } else { seconds * 20 };
+        } else if potion.is_instant() {
+            ticks = 1;
+        }
+        if args.len() >= 4 {
+            amplifier = parse_int(args[3], 0, 255)?;
+        }
+        let hide = args.len() >= 5 && args[4].eq_ignore_ascii_case("true");
+        if seconds > 0 {
+            let mut e = PotionEffect::new(potion, ticks, amplifier);
+            e.show_particles = !hide;
+            self.effects.push(Effect::Potion(id, PotionOp::Add(e)));
+            self.notify(format!("Given {} (ID {}) * {} to {} for {} seconds", potion.display_name(), potion.id(), amplifier, name, seconds));
+        } else {
+            self.effects.push(Effect::Potion(id, PotionOp::Remove(potion)));
+            self.notify(format!("Took {} from {}", potion.display_name(), name));
+        }
+        Ok(())
+    }
+
     /// `CommandKill`, then the respawn: at the player's `/spawnpoint`, else on the top block at
     /// the world spawn (`PlayerList.recreatePlayerEntity`).
     fn kill(&mut self, args: &[&str]) -> R {
@@ -416,15 +474,7 @@ impl Ctx<'_> {
             None => self.sender_player()?,
         };
         let (id, name) = (self.players[k].id, self.players[k].name.clone());
-        if self.world.rule("showDeathMessages") != Some("false") {
-            self.effects.push(Effect::Broadcast(format!("{name} fell out of the world")));
-        }
-        let tp = match self.world.player(&name).and_then(|s| s.spawn) {
-            // EntityPlayer.getBedSpawnLocation with a forced spawn point: right there.
-            Some([x, y, z]) => Teleport { pos: [x as f64 + 0.5, y as f64 + 0.1, z as f64 + 0.5], yaw: 0.0, pitch: 0.0, flags: proto::TP_RESPAWN },
-            None => world_spawn(self.world),
-        };
-        self.effects.push(Effect::Teleport(id, tp));
+        self.effects.push(Effect::Kill(id, name.clone()));
         self.notify(format!("Killed {name}"));
         Ok(())
     }
@@ -627,6 +677,30 @@ impl Ctx<'_> {
         let (id, name) = (self.players[k].id, self.players[k].name.clone());
         self.effects.push(Effect::Teleport(id, Teleport { pos: [x.result, y.result, z.result], yaw, pitch, flags }));
         self.notify(format!("Teleported {name} to {}, {}, {}", java_double(x.result), java_double(y.result), java_double(z.result)));
+        Ok(())
+    }
+
+    /// `CommandSummon`: the position defaults to the sender's (x and z centred, `~` relative).
+    /// Only the mobs the game has (`game::mobs::MOBS`) summon; any other name is vanilla's
+    /// `commands.summon.failed`. DROPPED: the `dataTag` (it is parsed away), and the
+    /// `outOfWorld` check for an unloaded chunk, which the game thread makes and ignores.
+    fn summon(&mut self, args: &[&str]) -> R {
+        if args.is_empty() {
+            return Err(usage(SUMMON));
+        }
+        let name = args[0].strip_prefix("minecraft:").unwrap_or(args[0]);
+        let kind = sim::kinds::by_name(name).filter(|k| crate::game::mobs::def_of(k).is_some());
+        let mut pos = self.sender_pos();
+        if args.len() >= 4 {
+            pos[0] = coordinate(pos[0], args[1], true, -30_000_000, 30_000_000)?.result;
+            pos[1] = coordinate(pos[1], args[2], false, -4096, 4096)?.result;
+            pos[2] = coordinate(pos[2], args[3], true, -30_000_000, 30_000_000)?.result;
+        }
+        let Some(kind) = kind else {
+            return Err("Unable to summon object".into());
+        };
+        self.effects.push(Effect::Summon(kind, pos));
+        self.notify("Object successfully spawned".into());
         Ok(())
     }
 

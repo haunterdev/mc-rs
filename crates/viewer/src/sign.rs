@@ -331,6 +331,7 @@ fn keys(
     time: Res<Time>,
     font: Option<Res<Font>>,
     link: Option<Res<Link>>,
+    screen_camera: Option<Res<crate::chat::ScreenCamera>>,
 ) {
     let signs = &mut *signs;
     if let Some(pos) = ctl.sign.take() {
@@ -339,6 +340,9 @@ fn keys(
             tile.lines = Default::default();
             tile.dirty = true;
             let root = commands.spawn((Node { position_type: PositionType::Absolute, width: percent(100), height: percent(100), ..default() }, GlobalZIndex(10))).id();
+            if let Some(camera) = &screen_camera {
+                commands.entity(root).insert(UiTargetCamera(camera.0));
+            }
             signs.editing = Some(Editing { pos, edit_line: 0, opened: time.elapsed_secs(), drawn: None, root, sign: None });
             menu.open = true;
             typed.clear();
@@ -539,7 +543,7 @@ fn render(
         };
         tile.seen = true;
         let board = *tile.board.get_or_insert_with(|| {
-            let material = materials.add(EntityMaterial { env: skin.env.clone(), skin: images.world.clone(), light: Vec4::new(0.0, 240.0, 0.0, 0.0) });
+            let material = materials.add(EntityMaterial::new(skin.env.clone(), images.world.clone()));
             tile.material = Some(material.clone());
             commands.spawn((Mesh3d(shared.0.clone()), MeshMaterial3d(material), Transform::default(), Visibility::Hidden, NoFrustumCulling, NotShadowCaster)).id()
         });

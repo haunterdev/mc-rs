@@ -10,56 +10,10 @@ use worldgen::java_random::JavaRandom;
 use crate::ids::item;
 use crate::stack::ItemStack;
 
-/// A `Potion.REGISTRY` entry that food can give.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Effect {
-    Nausea,
-    Regeneration,
-    Resistance,
-    FireResistance,
-    Hunger,
-    Poison,
-    Absorption,
-}
-
-impl Effect {
-    /// `Potion.getIdFromPotion`
-    pub const fn id(self) -> i32 {
-        match self {
-            Effect::Nausea => 9,
-            Effect::Regeneration => 10,
-            Effect::Resistance => 11,
-            Effect::FireResistance => 12,
-            Effect::Hunger => 17,
-            Effect::Poison => 19,
-            Effect::Absorption => 22,
-        }
-    }
-    /// The registry name (`minecraft:<name>`).
-    pub const fn name(self) -> &'static str {
-        match self {
-            Effect::Nausea => "nausea",
-            Effect::Regeneration => "regeneration",
-            Effect::Resistance => "resistance",
-            Effect::FireResistance => "fire_resistance",
-            Effect::Hunger => "hunger",
-            Effect::Poison => "poison",
-            Effect::Absorption => "absorption",
-        }
-    }
-}
-
-/// `new PotionEffect(potion, duration, amplifier)`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PotionEffect {
-    pub effect: Effect,
-    /// ticks
-    pub duration: i32,
-    pub amplifier: i32,
-}
+pub use crate::potion::{Effect, PotionEffect};
 
 const fn pe(effect: Effect, duration: i32, amplifier: i32) -> PotionEffect {
-    PotionEffect { effect, duration, amplifier }
+    PotionEffect::new(effect, duration, amplifier)
 }
 
 /// One `ItemFood` as constructed in `Item.registerItems`.

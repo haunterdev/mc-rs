@@ -37,6 +37,11 @@ pub const B_AUDIO: u8 = 2;
 /// frame: queued frames are lag, and a picture a moment late beats one that falls further behind.
 const BACKLOG_SECONDS: f64 = 0.1;
 
+/// A dropped line is not a leave: a native viewer joins again with its token after waits of 1, 2,
+/// 3, 4 and 5 s (`join.rs` `REJOINS`), so a leave is held this long, the whole retry chain, and
+/// cancelled when the player comes back. A player who really left is announced once it runs out.
+const REJOIN_GRACE: Duration = Duration::from_secs(15);
+
 struct Online {
     name: String,
     to_viewer: mpsc::UnboundedSender<Vec<u8>>,
@@ -51,6 +56,9 @@ pub struct Hub {
     pub world: Arc<Mutex<World>>,
     pub accounts: Mutex<Accounts>,
     online: Mutex<HashMap<u32, Online>>,
+    /// Lowercase names whose leave is held for [`REJOIN_GRACE`]; a join that finds its name here
+    /// was a dropped line coming back, and says nothing either.
+    held: Mutex<std::collections::HashSet<String>>,
     /// Session tokens of viewers starting up, waiting for their connection.
     pending: Mutex<HashMap<String, oneshot::Sender<(TcpStream, Vec<u8>)>>>,
     pub session_addr: SocketAddr,
@@ -139,6 +147,7 @@ impl Hub {
             world: Arc::new(Mutex::new(world)),
             accounts: Mutex::new(accounts),
             online: Mutex::new(HashMap::new()),
+            held: Mutex::new(std::collections::HashSet::new()),
             pending: Mutex::new(HashMap::new()),
             session_addr: listener.local_addr()?,
             next_id: AtomicU32::new(1),
@@ -158,7 +167,11 @@ impl Hub {
         let _ = self.game.set(tx);
     }
 
-    fn to_game(&self, m: GameMsg) {
+    pub(crate) fn has_game(&self) -> bool {
+        self.game.get().is_some()
+    }
+
+    pub(crate) fn to_game(&self, m: GameMsg) {
         if let Some(tx) = self.game.get() {
             let _ = tx.send(m);
         }
@@ -463,8 +476,12 @@ impl Hub {
         first.extend(paintings);
         let (to_viewer, mut viewer_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let kick = Arc::new(Notify::new());
+        // The same name still online is a session this one replaces (a rejoin that beat the old
+        // line's close): it leaves without a word (leave), so this join says nothing either.
+        let replacing;
         {
             let mut online = self.online.lock().unwrap();
+            replacing = online.values().any(|o| o.name.eq_ignore_ascii_case(&name));
             for (&other, o) in online.iter() {
                 let mut join = other.to_le_bytes().to_vec();
                 join.extend_from_slice(o.name.as_bytes());
@@ -487,8 +504,7 @@ impl Hub {
         println!("{name} joined ({} online)", self.count());
         say(json!({"t": "welcome", "name": name, "width": w, "height": h, "fps": fps, "bitrate_kbps": picture.bitrate_kbps}));
         self.log_latency(&name, "server", json!({"event": "join", "width": w, "height": h, "fps": fps, "bitrate_kbps": picture.bitrate_kbps, "backlog_limit": backlog_limit}));
-        self.chat("", &format!("{name} joined the game"));
-        self.announce_players();
+        self.announce_join(&name, replacing);
 
         let writer_task = tokio::spawn(async move {
             while let Some(f) = viewer_rx.recv().await {
@@ -636,20 +652,65 @@ impl Hub {
         if let Some(c) = child.as_mut() {
             let _ = c.kill().await;
         }
+        if reason == "game session ended" {
+            let _ = to_browser.send(ToBrowser::Close("Your game session ended; the host log says why.".into()));
+        }
+        self.leave(id, &name, reason);
+    }
+
+    /// A session ended: drop it, keep its state, free its player model and tell everyone `name`
+    /// left (`NetHandlerPlayServer.onDisconnect`'s `multiplayer.player.left` line, then
+    /// `PlayerList.playerLoggedOut`'s player-list removal). A session whose name already has a
+    /// newer session (a duplicate login, or a rejoin that beat this close) was replaced and says
+    /// nothing. Any other leave is held for [`REJOIN_GRACE`] first, so a line that only dropped
+    /// and joined again announces nothing; a player who really left is announced once it is over.
+    fn leave(self: &Arc<Hub>, id: u32, name: &str, reason: &str) {
+        self.leave_held(id, name, reason, REJOIN_GRACE);
+    }
+
+    /// "`name` joined the game" (`PlayerList.initializeConnectionToPlayer`), unless the join only
+    /// replaces a session of the same name (`replacing`) or ends a held leave: a dropped line
+    /// that came back says nothing on either side.
+    fn announce_join(&self, name: &str, replacing: bool) {
+        if !self.held.lock().unwrap().remove(&name.to_ascii_lowercase()) && !replacing {
+            self.chat("", &format!("{name} joined the game"));
+        }
+        self.announce_players();
+    }
+
+    /// [`leave`](Hub::leave) with the length of the hold passed in, so a test can use a short one.
+    fn leave_held(self: &Arc<Hub>, id: u32, name: &str, reason: &str, grace: Duration) {
         let gone = self.online.lock().unwrap().remove(&id);
         self.to_game(GameMsg::Leave { id });
         if let Some(s) = gone.and_then(|o| o.state) {
             let mut w = self.world.lock().unwrap();
-            w.remember(&name, &s);
+            w.remember(name, &s);
             w.save();
         }
         self.to_viewers(id, proto::frame(proto::S_LEAVE, &id.to_le_bytes()));
-        if reason == "game session ended" {
-            let _ = to_browser.send(ToBrowser::Close("Your game session ended; the host log says why.".into()));
-        }
         println!("{name} left: {reason} ({} online)", self.count());
-        self.log_latency(&name, "server", json!({"event": "leave", "reason": reason}));
-        self.chat("", &format!("{name} left the game"));
-        self.announce_players();
+        self.log_latency(name, "server", json!({"event": "leave", "reason": reason}));
+        if self.online.lock().unwrap().iter().any(|(&other, o)| other > id && o.name.eq_ignore_ascii_case(name)) {
+            return;
+        }
+        let hub = self.clone();
+        let who = name.to_string();
+        hub.held.lock().unwrap().insert(who.to_ascii_lowercase());
+        tokio::spawn(async move {
+            tokio::time::sleep(grace).await;
+            // A rejoin took the name out of `held` (and kept quiet); otherwise the leave stands.
+            if !hub.held.lock().unwrap().remove(&who.to_ascii_lowercase()) {
+                return;
+            }
+            if hub.online.lock().unwrap().values().any(|o| o.name.eq_ignore_ascii_case(&who)) {
+                return;
+            }
+            hub.chat("", &format!("{who} left the game"));
+            hub.announce_players();
+        });
     }
 }
+
+#[cfg(test)]
+#[path = "hub_tests.rs"]
+mod tests;

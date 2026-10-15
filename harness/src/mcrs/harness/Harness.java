@@ -75,6 +75,8 @@ public final class Harness {
             Pop.trace(Long.parseLong(args[1]), Integer.parseInt(args[2]), Integer.parseInt(args[3]), box);
         } else if (mode.equals("creative")) {
             Creative.run(new File(args[1]));
+        } else if (mode.equals("states")) {
+            States.run(new File(args[1]));
         } else if (mode.equals("bench")) {
             Bench.run(Long.parseLong(args[1]), Integer.parseInt(args[2]));
         } else {

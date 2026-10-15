@@ -15,7 +15,8 @@ use worldgen::populate::state as st;
 
 use crate::colors::Colors;
 use crate::fluid;
-use crate::models::{Facing, Models, Quad};
+use crate::models::{coordinate_random, BakedModel, Facing, Models, Quad};
+use crate::multipart;
 use crate::region::{props, Layer, Region};
 use crate::vertex::LayerMesh;
 
@@ -33,6 +34,9 @@ pub struct ChunkMesh {
     pub cutout: LayerMesh,
     /// `TRANSLUCENT`
     pub translucent: LayerMesh,
+    /// The chests in the chunk (world coordinates). Their block draws nothing; the tile entity
+    /// renderer (survival/chest_render.rs) does.
+    pub chests: Vec<(i32, i32, i32)>,
 }
 
 impl ChunkMesh {
@@ -59,6 +63,9 @@ pub fn mesh(region: &Region, models: &Models, colors: &Colors, smooth: bool) -> 
         for y in 0..256 {
             for x in 0..16 {
                 let state = region.state(x, y, z);
+                if state >> 4 == id::CHEST {
+                    out.chests.push((region.origin.0 + x, y, region.origin.1 + z));
+                }
                 let p = props(state);
                 if p.invisible {
                     continue;
@@ -67,11 +74,7 @@ pub fn mesh(region: &Region, models: &Models, colors: &Colors, smooth: bool) -> 
                     fluid::render(region, models, colors, state, x, y, z, &mut out);
                     continue;
                 }
-                let (draw, flag) = actual_state(region, state, x, y, z);
-                let Some(bm) = models.get(draw, flag) else { continue };
                 let (wx, wz) = (region.origin.0 + x, region.origin.1 + z);
-                let model = bm.pick(wx, y, wz);
-                r.offset = offset(draw, wx, wz);
                 let mut tag = 0;
                 if p.layer == Layer::Cutout {
                     tag |= FLAG_NOMIP;
@@ -79,29 +82,28 @@ pub fn mesh(region: &Region, models: &Models, colors: &Colors, smooth: bool) -> 
                 if p.light > 0 {
                     tag |= FLAG_EMISSIVE;
                 }
+                if models.is_multipart(state) {
+                    // MultipartBakedModel: every selector whose condition matches draws.
+                    let mask = multipart::mask(region, state, x, y, z);
+                    let Some(pick) = models.get_multipart(state, mask, coordinate_random(wx, y, wz)) else { continue };
+                    r.offset = offset(state, wx, wz);
+                    r.tint = None;
+                    let layer = out.layer(p.layer);
+                    let ao = smooth && p.light == 0 && pick.ambient_occlusion;
+                    for model in pick.models {
+                        r.draw(state, state, (x, y, z), model, ao, layer, tag, &|f| multipart::side_rendered(region, state, mask, x, y, z, f));
+                    }
+                    continue;
+                }
+                let (draw, flag) = actual_state(region, state, x, y, z);
+                let Some(bm) = models.get(draw, flag) else { continue };
+                let model = bm.pick(wx, y, wz);
+                r.offset = offset(draw, wx, wz);
                 r.tint = None;
                 let layer = out.layer(p.layer);
                 // BlockModelRenderer.renderModel
                 let ao = smooth && p.light == 0 && model.ambient_occlusion;
-                for f in Facing::ALL {
-                    let quads = &model.face_quads[f as usize];
-                    if !quads.is_empty() && should_side_be_rendered(region, state, x, y, z, f) {
-                        if ao {
-                            r.quads_smooth(state, draw, x, y, z, quads, layer, tag);
-                        } else {
-                            let o = f.vec();
-                            let light = r.packed_light(x + o[0], y + o[1], z + o[2]);
-                            r.quads_flat(state, draw, x, y, z, Some(light), quads, layer, tag);
-                        }
-                    }
-                }
-                if !model.general.is_empty() {
-                    if ao {
-                        r.quads_smooth(state, draw, x, y, z, &model.general, layer, tag);
-                    } else {
-                        r.quads_flat(state, draw, x, y, z, None, &model.general, layer, tag);
-                    }
-                }
+                r.draw(state, draw, (x, y, z), model, ao, layer, tag, &|f| should_side_be_rendered(region, state, x, y, z, f));
             }
         }
     }
@@ -123,6 +125,8 @@ pub fn actual_state(region: &Region, state: u16, x: i32, y: i32, z: i32) -> (u16
             let variant = if below >> 4 == id::DOUBLE_PLANT && below & 8 == 0 { below & 7 } else { 0 };
             (id::DOUBLE_PLANT << 4 | 8 | variant, false)
         }
+        // BlockDoor: each half takes the rest of its state from the other (sim::door::actual).
+        b if worldgen::blocks::is_door(b) => sim::door::actual(|x, y, z| region.state(x, y, z), state, x, y, z),
         _ => (state, false),
     }
 }
@@ -313,6 +317,31 @@ struct Renderer<'a> {
 }
 
 impl Renderer<'_> {
+    /// `BlockModelRenderer.renderModel` for one baked model: each side's quads when `side` says the
+    /// face shows, then the quads that never cull.
+    #[allow(clippy::too_many_arguments)]
+    fn draw(&mut self, state: u16, draw: u16, (x, y, z): (i32, i32, i32), model: &BakedModel, ao: bool, layer: &mut LayerMesh, tag: u32, side: &dyn Fn(Facing) -> bool) {
+        for f in Facing::ALL {
+            let quads = &model.face_quads[f as usize];
+            if !quads.is_empty() && side(f) {
+                if ao {
+                    self.quads_smooth(state, draw, x, y, z, quads, layer, tag);
+                } else {
+                    let o = f.vec();
+                    let light = self.packed_light(x + o[0], y + o[1], z + o[2]);
+                    self.quads_flat(state, draw, x, y, z, Some(light), quads, layer, tag);
+                }
+            }
+        }
+        if !model.general.is_empty() {
+            if ao {
+                self.quads_smooth(state, draw, x, y, z, &model.general, layer, tag);
+            } else {
+                self.quads_flat(state, draw, x, y, z, None, &model.general, layer, tag);
+            }
+        }
+    }
+
     /// `Block.getPackedLightmapCoords` for a block with light value 0 (every block a model draws).
     fn packed_light(&self, x: i32, y: i32, z: i32) -> i32 {
         self.region.combined_light(x, y, z, 0)
@@ -524,5 +553,185 @@ mod tests {
         assert_eq!(up, 15 << 20 | 0);
         // Smooth: every corner of an open face reads full sky, so the AO average keeps it.
         assert_eq!(ao_brightness(up, up, up, up), 240 << 16);
+    }
+
+    /// Every placeable model state, set alone in the air, meshes at least one quad, in
+    /// the layer `Block.getRenderLayer` names, and a full opaque cube beside it is culled.
+    #[test]
+    fn placed_blocks_mesh() {
+        use crate::{colors::Colors, jar::Jar};
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        let colors = Colors::load(&jar).expect("colors");
+        let mut bad = Vec::new();
+        for (b, m) in [(id::SAPLING, 0u16), (id::SAPLING, 3), (id::SAPLING, 5), (id::SAPLING, 8 | 2), (19, 0), (19, 1), (id::TALLGRASS, 1), (id::DEADBUSH, 0), (id::YELLOW_FLOWER, 0)] {
+            let s = worldgen::blocks::state(b, m);
+            let r = region_of(chunk(0, 0, 64, |p| p.set(4, 70, 4, s)), 64);
+            let mesh = mesh(&r, &models, &colors, true);
+            let layer = props(s).layer;
+            let in_layer = match layer {
+                Layer::Solid => mesh.solid.quads(),
+                Layer::Translucent => mesh.translucent.quads(),
+                _ => mesh.cutout.quads(),
+            };
+            if in_layer == 0 {
+                bad.push(format!("{b}:{m} {layer:?}"));
+            }
+        }
+        assert!(bad.is_empty(), "no quads: {bad:?}");
+        // The sponge is an opaque cube like stone: a neighbor's face toward it is culled.
+        let sponge = worldgen::blocks::state(19, 0);
+        assert!(props(sponge).opaque_cube && props(sponge).full_cube);
+        let r = region_of(chunk(0, 0, 64, |p| p.set(4, 70, 4, sponge)), 64);
+        assert!(!should_side_be_rendered(&r, STONE, 4, 71, 4, Facing::Down));
+    }
+
+    /// A multipart block set in the air, with `others` around it; the models it draws.
+    fn multipart_models(models: &Models, block: u16, others: &[(i32, i32, i32, u16)]) -> (u16, usize) {
+        use worldgen::blocks::state;
+        let (x, y, z) = (4, 70, 4);
+        let others = others.to_vec();
+        let r = region_of(
+            chunk(0, 0, 64, |p| {
+                p.set(x, y, z, state(block, 0));
+                for &(dx, dy, dz, s) in &others {
+                    p.set(x + dx, y + dy, z + dz, s);
+                }
+            }),
+            64,
+        );
+        let mask = multipart::mask(&r, state(block, 0), x, y, z);
+        (mask, models.get_multipart(state(block, 0), mask, 0).expect("multipart").models.len())
+    }
+
+    #[test]
+    fn a_fence_between_two_fences_bakes_a_post_and_two_sides() {
+        use crate::blockstates::{EAST, WEST};
+        use crate::{colors::Colors, jar::Jar};
+        use worldgen::blocks::state;
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        let fence = state(85, 0);
+        let lone = multipart_models(&models, 85, &[]);
+        assert_eq!(lone, (0, 1));
+        let both = multipart_models(&models, 85, &[(1, 0, 0, fence), (-1, 0, 0, fence)]);
+        assert_eq!(both, (EAST | WEST, 3));
+        // A nether brick fence does not join a wooden one, and stone joins both.
+        assert_eq!(multipart_models(&models, 85, &[(1, 0, 0, state(113, 0))]).0, 0);
+        assert_eq!(multipart_models(&models, 113, &[(1, 0, 0, STONE)]).0, EAST);
+        // A fence is not a full cube: the stone beside it still draws its face toward it.
+        assert!(!props(fence).opaque_cube && !props(fence).full_cube);
+        let r = region_of(chunk(0, 0, 64, |p| p.set(5, 70, 4, fence)), 64);
+        assert!(should_side_be_rendered(&r, STONE, 4, 70, 4, Facing::East));
+        // The mesh holds the post and both arms.
+        let colors = Colors::load(&jar).expect("colors");
+        let mesh_of = |others: &[(i32, u16)]| {
+            let r = region_of(
+                chunk(0, 0, 64, |p| {
+                    p.set(4, 70, 4, fence);
+                    for &(dx, s) in others {
+                        p.set(4 + dx, 70, 4, s);
+                    }
+                }),
+                64,
+            );
+            mesh(&r, &models, &colors, true).quads()
+        };
+        let one = mesh_of(&[]);
+        assert!(one > 0);
+        let three = mesh_of(&[(1, fence), (-1, fence)]);
+        assert!(three > one, "three fences draw more than one lone post: {three} vs {one}");
+    }
+
+    #[test]
+    fn a_lone_pane_bakes_its_post_shape() {
+        use crate::blockstates::{NORTH, SOUTH};
+        use crate::jar::Jar;
+        use worldgen::blocks::state;
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        // glass_pane.json: the post, and a noside model for each of the four open sides.
+        assert_eq!(multipart_models(&models, 102, &[]), (0, 5));
+        // Joined north and south (glass and stone): the post, two sides and two nosides.
+        let (mask, n) = multipart_models(&models, 102, &[(0, 0, -1, state(102, 0)), (0, 0, 1, STONE)]);
+        assert_eq!((mask, n), (NORTH | SOUTH, 5));
+        // Iron bars and stained panes join panes.
+        assert_eq!(multipart_models(&models, 101, &[(0, 0, -1, state(160, 3))]).0, NORTH);
+    }
+
+    #[test]
+    fn a_wall_with_only_north_and_south_has_no_up_post() {
+        use crate::blockstates::{NORTH, SOUTH, UP};
+        use crate::jar::Jar;
+        use worldgen::blocks::state;
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        let wall = state(139, 0);
+        let (mask, n) = multipart_models(&models, 139, &[(0, 0, -1, wall), (0, 0, 1, wall)]);
+        assert_eq!(mask, NORTH | SOUTH);
+        assert_eq!(n, 2, "two sides and no post");
+        // A block above, or a third side, brings the post back.
+        assert_eq!(multipart_models(&models, 139, &[(0, 0, -1, wall), (0, 0, 1, wall), (0, 1, 0, STONE)]).0, NORTH | SOUTH | UP);
+        assert_eq!(multipart_models(&models, 139, &[(0, 0, -1, wall), (0, 0, 1, wall), (1, 0, 0, wall)]).0, NORTH | SOUTH | crate::blockstates::EAST | UP);
+        assert_eq!(multipart_models(&models, 139, &[]), (UP, 1));
+    }
+
+    #[test]
+    fn redstone_wire_next_to_a_block_one_higher_bakes_the_up_piece() {
+        use crate::blockstates::{WIRE_SIDE, WIRE_UP};
+        use crate::jar::Jar;
+        use worldgen::blocks::state;
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        let wire = state(55, 0);
+        // Alone it is the dot.
+        assert_eq!(multipart_models(&models, 55, &[]), (0, 1));
+        // A wire beside it joins as a side.
+        assert_eq!(multipart_models(&models, 55, &[(1, 0, 0, wire)]).0, WIRE_SIDE << 2);
+        // Stone beside it with wire on top climbs: the east side is UP, and redstone_up draws.
+        let (mask, n) = multipart_models(&models, 55, &[(1, 0, 0, STONE), (1, 1, 0, wire)]);
+        assert_eq!(mask, WIRE_UP << 2);
+        assert_eq!(n, 3, "the line pieces and redstone_up");
+        // Stone beside it with nothing on top leaves the side open.
+        assert_eq!(multipart_models(&models, 55, &[(1, 0, 0, STONE)]).0, 0);
+    }
+
+    #[test]
+    fn fire_chorus_and_the_brewing_stand_pick_their_models() {
+        use crate::blockstates::{DOWN, EAST, UP};
+        use crate::jar::Jar;
+        use worldgen::blocks::state;
+        let Ok(jar) = Jar::find() else {
+            eprintln!("skipped: no client jar");
+            return;
+        };
+        let models = Models::load(&jar).expect("models");
+        // Fire with nothing to burn or stand on draws the floor and every side; over a floor that
+        // holds it the neighbors do not count; a plank wall beside it with air below flames that side.
+        // (the floor pair and the four side flames: the `OR` with all properties false matches).
+        assert_eq!(multipart_models(&models, 51, &[]), (0, 5));
+        assert_eq!(multipart_models(&models, 51, &[(0, -1, 0, STONE), (1, 0, 0, state(5, 0))]).0, 0);
+        assert_eq!(multipart_models(&models, 51, &[(1, 0, 0, state(5, 0))]).0, EAST);
+        // Chorus plant: stacked on end stone and under another plant.
+        let chorus = state(199, 0);
+        assert_eq!(multipart_models(&models, 199, &[(0, -1, 0, state(121, 0)), (0, 1, 0, chorus)]).0, DOWN | UP);
+        // Brewing stand: bottles are meta bits.
+        let r = region_of(chunk(0, 0, 64, |p| p.set(4, 70, 4, state(117, 5))), 64);
+        assert_eq!(multipart::mask(&r, state(117, 5), 4, 70, 4), 5);
     }
 }

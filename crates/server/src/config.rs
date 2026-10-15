@@ -1,5 +1,6 @@
 //! `server.json` in the data folder, written with the defaults on the first start.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,10 @@ pub struct Config {
     /// The hostname the named tunnel serves (`cloudflared tunnel route dns NAME HOST`), the
     /// public link `https://HOST`.
     pub hostname: String,
+    /// Other local web servers the named tunnel serves on the same hostname, by path prefix:
+    /// `{"/rooster": 28015}` sends `https://HOST/rooster` and everything under it to
+    /// `http://127.0.0.1:28015`, path unchanged.
+    pub routes: BTreeMap<String, u16>,
     /// Who may run the commands that change the world or other players (`/time`, `/tp`,
     /// `/gamemode` and the rest; commands.rs): "everyone" (the default) or "ops".
     pub commands: String,
@@ -75,6 +80,14 @@ pub struct Config {
     pub backup_minutes: u32,
     /// The newest backups kept in `backups/`; older ones are removed. 0 keeps every one.
     pub backup_keep: usize,
+    /// The addons switched on (`game/addons`): each changes how the game plays, and with the list
+    /// empty every mob behaves as vanilla 1.12.2. Each addon's settings are in
+    /// `addons/<name>.json` in the data folder, written with the defaults on the first start.
+    pub addons: Vec<String>,
+    /// Leaves that start checking for decay (a log nearby was broken) are ticked again 2 to 10
+    /// ticks later instead of waiting for a random tick.
+    #[serde(rename = "fastLeafDecay")]
+    pub fast_leaf_decay: bool,
 }
 
 impl Default for Config {
@@ -100,6 +113,7 @@ impl Default for Config {
             cloudflared: String::new(),
             tunnel_name: String::new(),
             hostname: String::new(),
+            routes: BTreeMap::new(),
             commands: "everyone".into(),
             ops: Vec::new(),
             difficulty: "normal".into(),
@@ -109,7 +123,9 @@ impl Default for Config {
             jar: String::new(),
             default_game_mode: "survival".into(),
             backup_minutes: 30,
+            addons: vec!["epic-siege".into()],
             backup_keep: 24,
+            fast_leaf_decay: false,
         }
     }
 }

@@ -158,6 +158,8 @@ impl Colors {
             id::GRASS | id::TALLGRASS | id::REEDS => self.grass_at(r, x, y, z),
             id::WATER | id::FLOWING_WATER => self.water_at(r, x, y, z),
             id::WATERLILY => 2129968,
+            // BlockRedstoneWire.colorMultiplier(0): the dust at power 0 (POWER is not carried).
+            55 => 0x4C0000,
             // BlockOldLeaf.VARIANT: spruce and birch keep fixed colors.
             id::LEAVES => match state & 3 {
                 1 => 6396257,

@@ -111,8 +111,16 @@ fn layer_of(block: u16) -> Layer {
         | id::GLASS
         | id::TORCH
         | id::WATERLILY => Layer::Cutout,
+        // BlockDoor.getRenderLayer
+        b if worldgen::blocks::is_door(b) => Layer::Cutout,
         id::ICE | id::WATER | id::FLOWING_WATER => Layer::Translucent,
-        _ => Layer::Solid,
+        // Every other block: the jar's own `getRenderLayer` (states.rs).
+        b => match crate::states::render_layer(b) {
+            1 => Layer::CutoutMipped,
+            2 => Layer::Cutout,
+            3 => Layer::Translucent,
+            _ => Layer::Solid,
+        },
     }
 }
 
@@ -482,6 +490,27 @@ pub mod tests {
     use super::*;
     use crate::testing::{chunk, region_of};
     use worldgen::blocks::{state, LAVA, STONE, WATER};
+
+    /// The render flags of the blocks a player places, against `Block.isOpaqueCube`,
+    /// `isFullCube` and `getBlockLayer` in 1.12.2: solid cubes (the sponge among them) are opaque
+    /// and drawn solid; the plants and wall fixtures are not opaque and are cutouts.
+    #[test]
+    fn placed_block_flags_follow_1_12_2() {
+        let solid = [1u16, 3, 4, 5, 7, 12, 13, 14, 15, 16, 17, 19, 21, 22, 23, 24, 25, 35, 41, 42, 43, 45, 46, 47, 48, 49, 56, 57, 58, 61, 73, 82, 84, 87, 88, 89, 97, 98, 112, 121, 153, 155, 159, 162, 168, 172, 173, 179, 215, 216, 251];
+        for b in solid {
+            for m in [0u16, 1] {
+                let p = props(state(b, m));
+                if (b == 1 || b == 5 || b == 12 || b == 24 || b == 97 || b == 98 || b == 17 || b == 19 || b == 35) || m == 0 {
+                    assert!(p.opaque_cube && p.full_cube && p.layer == Layer::Solid, "{b}:{m} {p:?}");
+                }
+            }
+        }
+        let cutout = [6u16, 30, 31, 32, 37, 38, 39, 40, 50, 59, 65, 66, 83, 104, 105, 106, 115, 127, 141, 142];
+        for b in cutout {
+            let p = props(state(b, 0));
+            assert!(!p.opaque_cube && p.layer == Layer::Cutout, "{b} {p:?}");
+        }
+    }
 
     #[test]
     fn open_sky_is_full_and_rock_is_dark() {

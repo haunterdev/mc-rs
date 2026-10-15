@@ -184,7 +184,6 @@ fn gamemode_stores_sends_and_tells_the_player() {
         vec![
             Effect::GameMode(2, proto::GM_SPECTATOR),
             Effect::Tell(2, Line::plain("Your game mode has been updated to Spectator Mode")),
-            Effect::Tell(2, Line::colored("Spectator play is not built yet: you fly, but still collide and build.", "gray")),
             Effect::Feedback(Line::plain("Set Bob's game mode to Spectator Mode")),
         ]
     );
@@ -205,14 +204,13 @@ fn spawns_kill_and_respawn() {
     assert_eq!(t.said(1, "setworldspawn 1 2"), vec!["!Usage: /setworldspawn [<x> <y> <z>]"]);
     // No spawn point: the top block at the world spawn.
     let e = t.run(1, "kill Bob");
-    assert_eq!(e[0], Effect::Broadcast("Bob fell out of the world".into()));
+    assert_eq!(e[0], Effect::Kill(2, "Bob".into()));
+    assert_eq!(e[1], Effect::Feedback(Line::plain("Killed Bob")));
     let surface = Teleport { pos: [15.5, 70.0, -3.5], yaw: 0.0, pitch: 0.0, flags: proto::TP_RESPAWN | proto::TP_SURFACE };
-    assert_eq!(e[1], Effect::Teleport(2, surface));
-    assert_eq!(e[2], Effect::Feedback(Line::plain("Killed Bob")));
+    assert_eq!(respawn_point(&t.world, "Bob"), surface);
     // With one: exactly there.
     assert_eq!(t.said(1, "spawnpoint Bob 1 80 1"), vec!["Set Bob's spawn point to (1, 80, 1)"]);
-    let tp = t.teleports(1, "kill Bob");
-    assert_eq!(tp, vec![(2, Teleport { pos: [1.5, 80.1, 1.5], yaw: 0.0, pitch: 0.0, flags: proto::TP_RESPAWN })]);
+    assert_eq!(respawn_point(&t.world, "Bob"), Teleport { pos: [1.5, 80.1, 1.5], yaw: 0.0, pitch: 0.0, flags: proto::TP_RESPAWN });
     assert_eq!(t.said(1, "spawnpoint Bob 1"), vec!["!Usage: /spawnpoint [player] [<x> <y> <z>]"]);
 }
 
@@ -240,9 +238,9 @@ fn help_pages_list_what_the_sender_may_use() {
         vec!["--- Showing help page 1 of 1 (/help <page>) ---", "/help [page|command name]", "/list", "/me <action ...>", "/spawn [player]", "/tell <player> <private message ...>"]
     );
     let op = t.said(1, "help 2");
-    assert_eq!(op[0], "--- Showing help page 2 of 4 (/help <page>) ---");
+    assert_eq!(op[0], "--- Showing help page 2 of 5 (/help <page>) ---");
     assert_eq!(op.len(), 8);
-    assert_eq!(t.said(1, "help 9"), vec!["!The number you have entered (9) is too big, it must be at most 4"]);
+    assert_eq!(t.said(1, "help 9"), vec!["!The number you have entered (9) is too big, it must be at most 5"]);
     assert_eq!(t.said(1, "help time"), vec!["!Usage: /time <set|add|query> <value>"]);
     assert_eq!(t.said(1, "help xyzzy"), vec!["!Unknown command. Try /help for a list of commands"]);
 }
@@ -271,6 +269,20 @@ fn weather_is_kept() {
 }
 
 #[test]
+fn difficulty_takes_names_and_ids_and_is_kept() {
+    let mut t = T::new();
+    assert_eq!(t.run(1, "difficulty hard"), vec![Effect::Difficulty(3), Effect::Feedback(Line::plain("Set game difficulty to Hard"))]);
+    assert_eq!(t.world.difficulty, Some(3));
+    assert!(t.run(1, "difficulty 0").contains(&Effect::Difficulty(0)));
+    assert!(t.run(1, "difficulty PEACEFUL").contains(&Effect::Difficulty(0)));
+    assert_eq!(t.said(1, "difficulty 7"), vec!["!Usage: /difficulty <peaceful|easy|normal|hard>"]);
+    assert_eq!(t.said(1, "difficulty"), vec!["!Usage: /difficulty <peaceful|easy|normal|hard>"]);
+    assert!(t.said(2, "difficulty easy")[0].starts_with('!'), "a non-operator is refused");
+    t.world.save();
+    assert_eq!(World::load(&t.dir).unwrap().difficulty, Some(0));
+}
+
+#[test]
 fn everyone_may_run_everything_but_op_by_default() {
     let mut t = T::new();
     t.open = true;
@@ -279,7 +291,7 @@ fn everyone_may_run_everything_but_op_by_default() {
     assert_eq!(t.said(2, "op Bob"), vec!["!You do not have permission to use this command"]);
     assert_eq!(t.said(2, "deop xy"), vec!["!You do not have permission to use this command"]);
     assert_eq!(t.said(2, "help")[0], "--- Showing help page 1 of 3 (/help <page>) ---");
-    assert_eq!(t.said(2, "help 3"), vec!["--- Showing help page 3 of 3 (/help <page>) ---", "/tp [target player] <destination player> OR /tp [target player] <x> <y> <z> [<yaw> <pitch>]", "/weather <clear|rain|thunder> [duration in seconds]"]);
+    assert_eq!(t.said(2, "help 3"), vec!["--- Showing help page 3 of 3 (/help <page>) ---", "/summon <entityName> [x] [y] [z] [dataTag]", "/tell <player> <private message ...>", "/time <set|add|query> <value>", "/tp [target player] <destination player> OR /tp [target player] <x> <y> <z> [<yaw> <pitch>]", "/weather <clear|rain|thunder> [duration in seconds]"]);
     // Under "ops" the same player is refused, and an op is not.
     t.open = false;
     assert_eq!(t.said(2, "time set day"), vec!["!You do not have permission to use this command"]);
@@ -374,4 +386,36 @@ fn backup_and_rollback_are_for_ops() {
     assert_eq!(t.said(1, "backup list").last().unwrap(), &format!("The world rolls back to {name} when the server next starts"));
     assert_eq!(t.run(1, "rollback cancel"), vec![Effect::Rollback(None), Effect::Feedback(Line::plain("The rollback is cancelled"))]);
     assert_eq!(t.said(1, "rollback a b"), vec!["!Usage: /rollback [list|cancel|<backup name>]"]);
+}
+
+#[test]
+fn summon_places_a_mob_at_the_sender_or_the_coordinates() {
+    let mut t = T::new();
+    let summons = |t: &mut T, id: u32, line: &str| -> Vec<(&'static str, [f64; 3])> {
+        t.run(id, line).into_iter().filter_map(|e| if let Effect::Summon(k, p) = e { Some((k.name, p)) } else { None }).collect()
+    };
+    assert_eq!(summons(&mut t, 1, "summon cow"), vec![("cow", [10.25, 64.0, -3.75])]);
+    assert_eq!(summons(&mut t, 1, "summon minecraft:cow 5 70 ~2"), vec![("cow", [5.5, 70.0, -1.75])]);
+    assert_eq!(t.said(1, "summon cow 1 2 3"), vec!["Object successfully spawned"]);
+    assert_eq!(t.said(1, "summon"), vec!["!Usage: /summon <entityName> [x] [y] [z] [dataTag]"]);
+    assert_eq!(t.said(1, "summon notamob"), vec!["!Unable to summon object"]);
+    assert_eq!(t.said(1, "summon item"), vec!["!Unable to summon object"]);
+    assert_eq!(t.said(2, "summon cow"), vec!["!You do not have permission to use this command"]);
+}
+
+#[test]
+fn effect_gives_and_clears() {
+    use items::potion::{Effect as Fx, PotionEffect};
+    let mut t = T::new();
+    let e = t.run(1, "effect Bob speed 10 2");
+    assert_eq!(e[0], Effect::Potion(2, PotionOp::Add(PotionEffect::new(Fx::Speed, 200, 2))));
+    assert_eq!(e[1], Effect::Feedback(Line::plain("Given Speed (ID 1) * 2 to Bob for 10 seconds")));
+    // The default is 30 seconds; an instant effect counts ticks as seconds.
+    assert_eq!(t.run(1, "effect Bob minecraft:regeneration")[0], Effect::Potion(2, PotionOp::Add(PotionEffect::new(Fx::Regeneration, 600, 0))));
+    assert_eq!(t.run(1, "effect Bob instant_health")[0], Effect::Potion(2, PotionOp::Add(PotionEffect::new(Fx::InstantHealth, 1, 0))));
+    assert_eq!(t.run(1, "effect Bob 1 0")[0], Effect::Potion(2, PotionOp::Remove(Fx::Speed)));
+    let e = t.run(1, "effect Bob clear");
+    assert_eq!(e[0], Effect::Potion(2, PotionOp::Clear));
+    assert_eq!(e[1], Effect::Feedback(Line::plain("Took all effects from Bob")));
+    assert_eq!(t.said(1, "effect Bob nothing"), vec!["!There is no such mob effect with ID nothing"]);
 }

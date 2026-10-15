@@ -232,6 +232,19 @@ pub fn neighbor_light(s: &Streamer, x: i32, y: i32, z: i32) -> (u8, u8) {
     }
 }
 
+/// `Entity.getBrightnessForRender` at `at` (feet plus the eye height already added) looked up in
+/// the lightmap: the RGB an unlit-by-GL entity draw is multiplied by. An unloaded column gives 0
+/// like vanilla (`isBlockLoaded` false), which `neighbor_light` answers as sky 15 only for the
+/// terrain, so it is checked here.
+pub fn entity_light(env: &Env, s: &Streamer, at: DVec3) -> [f32; 3] {
+    let (x, y, z) = (at.x.floor() as i32, at.y.floor() as i32, at.z.floor() as i32);
+    if s.info_at(x, z).is_none() {
+        return env.light_rgb(0.0, 0.0);
+    }
+    let (sky, block) = neighbor_light(s, x, y, z);
+    env.light_rgb(block as f32 * 16.0, sky as f32 * 16.0)
+}
+
 /// `Timer.updateTimer` and the world's share of `Minecraft.runTick`: at most ten 50 ms ticks a
 /// frame, each stepping the cloud counter, the skylight and, with the daylight cycle on, the time.
 pub fn advance_clock(time: Res<Time>, settings: Res<Settings>, mut clock: ResMut<Clock>) {
@@ -286,6 +299,7 @@ pub fn update_view(
     colors: Res<BiomeColors>,
     player: Res<Player>,
     mut view: ResMut<View>,
+    vitals: Option<Res<crate::survival::hurt::Vitals>>,
 ) {
     let pt = clock.partial;
     view.feet = player.interp_pos(pt).as_vec3();
@@ -315,6 +329,11 @@ pub fn update_view(
         * Mat4::from_rotation_x(-view.pitch.to_radians())
         * orient
         * view.bob.inverse();
+    // setupCameraTransform runs hurtCameraEffect before applyBobbing, so its matrix is outermost
+    // in the modelview and the innermost factor of the camera.
+    if let Some(v) = vitals {
+        view.camera *= crate::survival::hurt::camera_effect(&v, pt).inverse();
+    }
     view.eye = view.camera.w_axis.truncate();
     view.fluid = fluid_at(&streamer, view.eye);
 
@@ -381,7 +400,17 @@ pub fn write_env(
     mut env: ResMut<Env>,
     mut sky_camera: Single<&mut Camera, With<SkyCamera>>,
     mut light: Single<(&mut Transform, &mut DirectionalLight)>,
+    player: Option<Res<crate::player::Player>>,
 ) {
+    let blindness = player.as_ref().and_then(|p| p.effects.get(items::potion::Effect::Blindness)).map(|e| e.duration);
+    let night_vision = player.as_ref().and_then(|p| p.effects.get(items::potion::Effect::NightVision)).map_or(0.0, |e| {
+        // EntityRenderer.getNightVisionBrightness
+        if e.duration > 200 {
+            1.0
+        } else {
+            0.7 + worldgen::math_helper::sin((e.duration as f32 - clock.partial) * std::f32::consts::PI * 0.2) * 0.3
+        }
+    });
     let angle = clock.angle();
     let rd = settings.render_distance as u32;
     let input = FogInput {
@@ -392,6 +421,8 @@ pub fn write_env(
         fluid: view.fluid,
         brightness: view.fog_color2 + (view.fog_color1 - view.fog_color2) * clock.partial,
         feet_y: view.feet.y as f64,
+        blindness,
+        night_vision,
     };
     let fog = celestial::fog_color(angle, &input);
     view.fog = fog;
@@ -400,7 +431,7 @@ pub fn write_env(
 
     // EntityRenderer.setupFog: exponential in a fluid, linear in the open, where the sky
     // (`startCoords` -1) starts at the eye and terrain and clouds at three quarters out.
-    // DROPPED: water breathing and respiration; the view entity has neither.
+    // Blindness comes before the fluids. DROPPED: water breathing and respiration.
     let fluid_fog = match view.fluid {
         Fluid::Water => Some(0.1),
         Fluid::Lava => Some(2.0),
@@ -409,6 +440,10 @@ pub fn write_env(
     // Terrain fog reaches the distant terrain (lod.rs) when it is on; the sky's stays at the
     // render distance.
     let fog_params = |chunks: u32, start_coords: i32| match fluid_fog {
+        _ if blindness.is_some() => {
+            let (s, e) = celestial::blindness_fog(chunks, start_coords, blindness.unwrap_or(0));
+            [s, e, 0.0, 0.0]
+        }
         Some(density) => [0.0, 0.0, density, 1.0],
         None => {
             let (s, e) = celestial::linear_fog(chunks, start_coords);
@@ -420,7 +455,7 @@ pub fn write_env(
 
     // EntityRenderer.updateLightmap reads the sun at partial tick 1.
     let sun = celestial::sun_brightness(celestial::celestial_angle(clock.world_time, 1.0));
-    env.set_lightmap(&lightmap::lightmap(sun, settings.gamma));
+    env.set_lightmap(&lightmap::lightmap(sun, settings.gamma, night_vision));
 
     let (dir, strength) = sun_light(angle);
     let shaded = settings.mode == Mode::Shaded;

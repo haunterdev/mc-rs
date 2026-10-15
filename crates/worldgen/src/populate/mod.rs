@@ -13,6 +13,7 @@ pub mod packed;
 pub mod props;
 pub mod spawn;
 pub mod state;
+pub mod ticks;
 pub mod trees;
 pub mod trees2;
 pub mod trees3;

@@ -31,7 +31,7 @@ impl Rig {
     /// A right click with the crosshair on `pos`'s `face` at `vec`.
     fn use_on(&mut self, pos: BlockPos, face: Facing, vec: (f64, f64, f64)) {
         self.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(vec.0, vec.1, vec.2), face, pos });
-        right_click_mouse(&mut self.w, &mut self.ctl, &mut self.hand, &self.inv, &self.player);
+        right_click_mouse(&mut self.w, &mut self.ctl, &mut self.hand, &mut self.inv, &self.player);
     }
     fn at(&self, x: i32, y: i32, z: i32) -> u16 {
         self.w.state(x, y, z)
@@ -246,4 +246,167 @@ fn a_sign_stands_on_top_hangs_on_a_side_and_opens_its_screen() {
     r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(2.5, 64.5, 0.5), face: Facing::Up, pos: (2, 64, 0) });
     middle_click_mouse(&r.w, &r.ctl, &mut r.inv);
     assert_eq!(r.inv.get_current_item().item, items::ids::item::SIGN);
+}
+
+#[test]
+fn a_right_click_on_a_mob_interacts_with_it_and_places_nothing() {
+    let mut r = Rig::new();
+    let c = r.inv.current_item;
+    r.inv.main[c] = ItemStack::of(items::ids::item::SIGN);
+    r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(2.5, 64.0, 0.5), face: Facing::Up, pos: (2, 63, 0) });
+    r.ctl.entity = Some(EntityHit { id: 77, vec: DVec3::new(0.5, 64.7, 2.0) });
+    right_click_mouse(&mut r.w, &mut r.ctl, &mut r.hand, &mut r.inv, &r.player);
+    assert_eq!(r.ctl.interacts, vec![(77, proto::HAND_MAIN)], "CPacketUseEntity INTERACT for the pointed mob");
+    assert!(r.ctl.attacks.is_empty() && r.ctl.sign.is_none());
+    assert_eq!(r.at(2, 64, 0), 0, "nothing is placed");
+    assert!(!r.hand.swinging, "interactWithEntity does not swing");
+    assert_eq!(r.ctl.right_click_delay, 4);
+    // With no mob under the crosshair the same click places the sign.
+    r.ctl.entity = None;
+    right_click_mouse(&mut r.w, &mut r.ctl, &mut r.hand, &mut r.inv, &r.player);
+    assert_eq!(r.ctl.interacts, vec![(77, proto::HAND_MAIN)]);
+    assert_ne!(r.at(2, 64, 0), 0);
+}
+
+#[test]
+fn a_left_click_on_a_mob_attacks_it_instead_of_digging() {
+    let mut r = Rig::new();
+    r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(0.5, 64.0, 3.0), face: Facing::North, pos: (0, 63, 3) });
+    r.ctl.entity = Some(EntityHit { id: 77, vec: DVec3::new(0.5, 64.7, 2.0) });
+    r.hand.ticks_since_last_swing = 20;
+    click_mouse(&mut r.w, &mut r.ctl, &mut r.hand);
+    assert_eq!(r.ctl.attacks, vec![77], "CPacketUseEntity ATTACK for the pointed mob");
+    assert!(r.hand.swinging, "the arm swings");
+    assert_eq!(r.hand.ticks_since_last_swing, 0, "resetCooldown");
+    assert_eq!(r.hand.left_click_counter, 0, "the block path's delay is not set");
+    assert_eq!(r.at(0, 63, 3), STONE, "nothing is dug");
+}
+
+/// Remembers which way the edits were made.
+struct Spy {
+    w: Blocks,
+    shared: usize,
+    quiet: usize,
+}
+
+impl BlockAccess for Spy {
+    fn state(&self, x: i32, y: i32, z: i32) -> u16 {
+        self.w.state(x, y, z)
+    }
+    fn loaded(&self, x: i32, z: i32) -> bool {
+        self.w.loaded(x, z)
+    }
+}
+
+impl World for Spy {
+    fn edit(&mut self, edits: Vec<Edit>) {
+        self.shared += edits.len();
+        self.w.edit(edits);
+    }
+    fn edit_quiet(&mut self, edits: Vec<Edit>) {
+        self.quiet += edits.len();
+        self.w.edit(edits);
+    }
+}
+
+#[test]
+fn a_survival_right_click_on_a_block_goes_to_the_server_as_use_on_not_as_blocks() {
+    let mut r = Rig::new();
+    r.player.game_mode = proto::GM_SURVIVAL;
+    let mut spy = Spy { w: std::mem::replace(&mut r.w, Blocks::floor_at(63, 8)), shared: 0, quiet: 0 };
+    r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(2.5, 64.0, 0.5), face: Facing::Up, pos: (2, 63, 0) });
+    right_click_mouse(&mut spy, &mut r.ctl, &mut r.hand, &mut r.inv, &r.player);
+    assert_eq!(spy.w.state(2, 64, 0), STONE, "the placement is still shown at once");
+    assert_eq!((spy.shared, spy.quiet), (0, 1), "and is not shared as V_BLOCKS");
+    assert_eq!(r.ctl.use_on.len(), 1);
+    assert_eq!((r.ctl.use_on[0].0.pos, r.ctl.use_on[0].1), ((2, 63, 0), STONE), "V_USE_ON carries the placed state");
+    // A click with two empty hands is still sent, once per hand: `processRightClickBlock` sends
+    // the packet before it returns PASS and the loop falls through to the off hand.
+    let cur = r.inv.current_item;
+    r.inv.main[cur] = ItemStack::EMPTY;
+    r.ctl.use_on.clear();
+    right_click_mouse(&mut spy, &mut r.ctl, &mut r.hand, &mut r.inv, &r.player);
+    assert_eq!(r.ctl.use_on.len(), 2);
+    assert_eq!((r.ctl.use_on[0].1, r.ctl.use_on[0].2, r.ctl.use_on[1].1, r.ctl.use_on[1].2), (0, proto::HAND_MAIN, 0, proto::HAND_OFF));
+    // Creative keeps the old path.
+    let mut c = Rig::new();
+    c.ctl.over = r.ctl.over;
+    let cur = c.inv.current_item;
+    c.inv.main[cur] = block_stack(id::STONE, 0);
+    right_click_mouse(&mut c.w, &mut c.ctl, &mut c.hand, &mut c.inv, &c.player);
+    assert!(c.ctl.use_on.is_empty());
+}
+
+/// In a survival session a door is shown at once but placed and swung by the server.
+#[test]
+fn a_survival_door_is_predicted_quietly_and_sent_as_use_on() {
+    let mut r = Rig::new();
+    r.player.game_mode = proto::GM_SURVIVAL;
+    let mut spy = Spy { w: std::mem::replace(&mut r.w, Blocks::floor_at(63, 8)), shared: 0, quiet: 0 };
+    let cur = r.inv.current_item;
+    r.inv.main[cur] = ItemStack::of(items::ids::item::OAK_DOOR);
+    r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(2.5, 64.0, 0.5), face: Facing::Up, pos: (2, 63, 0) });
+    right_click_mouse(&mut spy, &mut r.ctl, &mut r.hand, &mut r.inv, &r.player);
+    assert_eq!(spy.w.state(2, 64, 0) >> 4, id::WOODEN_DOOR);
+    assert_eq!(spy.w.state(2, 65, 0) >> 4, id::WOODEN_DOOR);
+    assert_eq!((spy.shared, spy.quiet), (0, 2), "both halves are shown, none shared as V_BLOCKS");
+    assert_eq!(r.ctl.use_on.len(), 1);
+    // Swinging it: the open bit flips locally, again not shared.
+    let before = spy.w.state(2, 64, 0);
+    r.inv.main[cur] = ItemStack::EMPTY;
+    r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(2.5, 64.5, 0.0), face: Facing::North, pos: (2, 64, 0) });
+    right_click_mouse(&mut spy, &mut r.ctl, &mut r.hand, &mut r.inv, &r.player);
+    assert_eq!(spy.w.state(2, 64, 0), before ^ 4);
+    assert_eq!(spy.shared, 0);
+}
+
+/// A survival break is shown at once but told to the server only through the running dig
+/// (`V_DIG`), so it must not also go as `V_BLOCKS`: the server drops the block from `V_DIG` and
+/// refuses an already-air one, losing the drop. Negative coordinates keep the chunk lookup honest.
+#[test]
+fn a_survival_break_is_predicted_quietly_and_not_shared() {
+    let at = (-37, 64, -5);
+    let mut r = Rig::new();
+    r.player.game_mode = proto::GM_SURVIVAL;
+    let mut spy = Spy { w: std::mem::replace(&mut r.w, Blocks::floor_at(63, 8)), shared: 0, quiet: 0 };
+    spy.w.set(at.0, at.1, at.2, state(id::RED_FLOWER, 0));
+    let hold = Hold { stack: ItemStack::EMPTY, dig: Default::default() };
+    // An instant break (hardness 0) goes through `onPlayerDestroyBlock` on the click.
+    r.ctl.mining.click_block(&mut spy, at, Facing::Up, &hold);
+    assert_eq!(spy.w.state(at.0, at.1, at.2), 0, "the break is still shown at once");
+    assert_eq!((spy.shared, spy.quiet), (0, 1), "and is not shared as V_BLOCKS");
+    // The dig itself is sent: the start frame.
+    use crate::survival::mining::Out;
+    let acts: Vec<u8> = r.ctl.mining.out.iter().filter_map(|o| if let Out::Dig(d) = o { Some(d.action) } else { None }).collect();
+    assert_eq!(acts, [proto::DIG_START]);
+    // Creative still shares its break as V_BLOCKS.
+    let mut c = Rig::new();
+    c.w.set(at.0, at.1, at.2, STONE);
+    let mut cspy = Spy { w: std::mem::replace(&mut c.w, Blocks::floor_at(63, 8)), shared: 0, quiet: 0 };
+    c.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(at.0 as f64 + 0.5, at.1 as f64 + 1.0, at.2 as f64 + 0.5), face: Facing::Up, pos: at });
+    click_mouse(&mut cspy, &mut c.ctl, &mut c.hand);
+    assert_eq!(cspy.w.state(at.0, at.1, at.2), 0);
+    assert_eq!((cspy.shared, cspy.quiet), (1, 0), "creative shares the break");
+}
+
+/// `Minecraft.rightClickMouse`'s hand loop: with the main hand empty (PASS on the block) the off
+/// hand's block is placed, and the `V_USE_ON` carries `HAND_OFF`.
+#[test]
+fn the_right_click_falls_through_to_the_off_hand() {
+    let mut r = Rig::new();
+    r.player.game_mode = proto::GM_SURVIVAL;
+    let cur = r.inv.current_item;
+    r.inv.main[cur] = ItemStack::EMPTY;
+    r.inv.off_hand[0] = block_stack(id::STONE, 0);
+    let mut spy = Spy { w: std::mem::replace(&mut r.w, Blocks::floor_at(63, 8)), shared: 0, quiet: 0 };
+    r.ctl.over = Some(Hit { kind: Kind::Block, vec: DVec3::new(2.5, 64.0, 0.5), face: Facing::Up, pos: (2, 63, 0) });
+    right_click_mouse(&mut spy, &mut r.ctl, &mut r.hand, &mut r.inv, &r.player);
+    assert_eq!(spy.w.state(2, 64, 0), STONE, "the off hand places it");
+    // The empty main hand's click is sent first, then the off hand's.
+    assert_eq!(r.ctl.use_on.iter().filter(|e| e.2 == proto::HAND_OFF).count(), 1);
+    assert_eq!(r.ctl.use_on.last().unwrap().2, proto::HAND_OFF);
+    assert!(r.hand.swinging && r.hand.swinging_hand == proto::HAND_OFF, "the off hand swings");
+    // The main hand did not place anything.
+    assert_eq!(r.ctl.use_on.first().unwrap().2, proto::HAND_MAIN);
+    assert_eq!(r.ctl.use_on.first().unwrap().1, 0);
 }

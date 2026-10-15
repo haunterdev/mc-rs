@@ -30,6 +30,13 @@ pub struct Gui {
 }
 
 impl Gui {
+    /// `InventoryEffectRenderer.updateActivePotionEffects`: the window sits further right while
+    /// the player has effects, to leave room for their list.
+    pub fn with_effects(mut self, x_size: i32) -> Gui {
+        self.left = super::super::effects::shifted_left(self.w, x_size);
+        self
+    }
+
     /// `GuiContainer.initGui`: the container centered, `(width - xSize) / 2`.
     pub fn new(pw: u32, ph: u32, x_size: i32, y_size: i32) -> Gui {
         let k = gui_scale(pw, ph);

@@ -1,13 +1,18 @@
 //! Viewer for the mc-rs terrain port: walk or fly through the generated world as a creative
 //! player.
 //!
-//! `viewer [--seed S] [--radius R] [--workers N] [--hide-gui] [--menu] [--screen creative[:TAB]] [--smoke SECONDS [--shot FILE.png] [--at X,Y,Z,YAW,PITCH] [--set KEY:VALUE]...]`
+//! `viewer [--seed S] [--radius R] [--workers N] [--hide-gui] [--menu] [--screen creative[:TAB]|inventory|crafting|chest|chest_double|furnace] [--survival[:dead]] [--chests] [--mobs[:hurt|:dying|:love|:hostile]] [--smoke SECONDS [--shot FILE.png] [--at X,Y,Z,YAW,PITCH] [--set KEY:VALUE]...]`
 //!
 //! `--seed` takes a number, or any other text, which is hashed like Java's `String.hashCode`.
 //! `--radius` overrides the render distance in the options file for this run.
 //! `--hide-gui` starts with the GUI hidden, as F1 does. `--menu` opens the options menu on the
 //! first frame, so a `--shot` shows it. `--screen creative` opens the creative inventory on the
 //! first frame, on the tab with that label (`buildingBlocks`, the default, `search`, `inventory`, ...).
+//! `--survival` plays the first frames in survival mode with sample health, food and xp (for a
+//! `--shot` of the HUD); `--survival:dead` opens the death screen instead.
+//! `--items` drops a few item stacks in front of the camera (for a `--shot` of the dropped item render).
+//! `--mobs` stands an adult and a baby cow, pig, sheep and chicken, and a walking cow, in front of the `--at` camera (for a `--shot` of the mob render); `--mobs:hurt` hits the standing and the baby cow every 8 ticks (the red overlay), `--mobs:dying` kills and respawns the standing one every 24, `--mobs:love` sends status 18 (love hearts) to the adults every 12 ticks; `--mobs:hostile` stands a zombie (burning, swinging), skeleton with a bow, creeper (fuse cycling), powered creeper, spider and a baby zombie instead of the farm set.
+//! `--crack N` shows break stage N on the block under the crosshair (for a `--shot` of the crack overlay).
 //! `--smoke` runs headless with a hidden window and default options, flies the player along +x
 //! while stepping through the AA, lighting and time options, prints the stats and exits; nonzero
 //! if no chunk got meshed. With `--shot` it stands at `--at` instead (eye position, yaw and pitch
@@ -30,10 +35,11 @@
 //!
 //! The `share` feature (tools/dist.py) builds a window-only exe with no console.
 //!
-//! Four cameras draw each frame, in order: the sky camera (sky, and the clouds while the eye is
+//! Five cameras draw each frame, in order: the sky camera (sky, and the clouds while the eye is
 //! under 128), the main camera (terrain, loading the sky camera's depth so the clouds occlude
 //! it, and the clouds from 128 up), the hand camera (the arm and the held block after a depth
-//! clear, then the UI) and the item camera (the hotbar icons over the UI, item_render.rs).
+//! clear, then the UI), the item camera (the hotbar icons over the UI, item_render.rs) and the chat
+//! camera (the chat lines over the icons, chat.rs).
 
 #![cfg_attr(feature = "share", windows_subsystem = "windows")]
 
@@ -69,6 +75,7 @@ mod media_load;
 mod vertex;
 mod mesher;
 mod models;
+mod multipart;
 mod particles;
 mod player;
 mod players;
@@ -80,6 +87,7 @@ mod sign;
 mod sky;
 mod stream;
 mod survival;
+mod tablist;
 mod target;
 mod teleport;
 mod textures;
@@ -140,9 +148,25 @@ pub struct Args {
     at: Option<[f32; 5]>,
     set: Vec<String>,
     hide_gui: bool,
+    /// `--demo-counts`: stack sizes and a worn tool on the hotbar, for a shot of its overlay.
+    demo_counts: bool,
+    /// `--demo-switcher`: opens the F3+F4 game mode screen on the first frame, for a shot.
+    demo_switcher: bool,
     menu: bool,
-    /// `--screen creative[:TAB]`
-    screen: Option<items::creative::Tab>,
+    /// `--screen creative[:TAB]`, `inventory` or `crafting`
+    screen: Option<ScreenArg>,
+    /// `--survival[:dead]`: Some(dead)
+    survival: Option<bool>,
+    /// `--crack STAGE`: the block under the crosshair shows that break stage (0 to 9).
+    crack: Option<u8>,
+    /// `--items`: a few dropped stacks in front of the camera (for a `--shot`).
+    items: bool,
+    /// `--chests`: a chest and a large chest in front of the `--at` camera, the large one open.
+    chests: bool,
+    /// `--mobs`: an adult and a baby of each kind, and a walking cow, in front of the `--at` camera.
+    mobs: bool,
+    /// `--mobs:hurt` (1), `--mobs:dying` (2) and `--mobs:love` (3): the cows are hit every 8 ticks, or the standing one dies and respawns every 24, or the adults get status 18 every 12.
+    mob_mode: u8,
     uncapped: bool,
     pub stream: Option<link::StreamArgs>,
     pub join: Option<join::JoinArgs>,
@@ -151,6 +175,19 @@ pub struct Args {
 /// `java.lang.String.hashCode`, over UTF-16 code units.
 fn java_hash(s: &str) -> i32 {
     s.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32))
+}
+
+/// The hotbar a new player starts with; with `--demo-counts` the stacks carry sizes and the
+/// last slot is a worn pickaxe.
+fn demo_inventory(demo: bool) -> Inventory {
+    let mut inv = Inventory::default();
+    if demo {
+        for (i, n) in [64, 1, 12, 3, 40, 2, 64, 9, 27].into_iter().enumerate() {
+            inv.main[i].set_count(n);
+        }
+        inv.main[8] = items::ItemStack::new(items::ids::item::IRON_PICKAXE, 1, 100);
+    }
+    inv
 }
 
 fn parse_args() -> Args {
@@ -168,8 +205,16 @@ fn parse_args() -> Args {
         at: None,
         set: Vec::new(),
         hide_gui: false,
+        demo_counts: false,
+        demo_switcher: false,
         menu: false,
         screen: None,
+        survival: None,
+        crack: None,
+        items: false,
+        chests: false,
+        mobs: false,
+        mob_mode: 0,
         uncapped: false,
         stream: None,
         join: None,
@@ -206,14 +251,47 @@ fn parse_args() -> Args {
             }
             "--set" => a.set.push(value()),
             "--hide-gui" => a.hide_gui = true,
+            "--demo-counts" => a.demo_counts = true,
+            "--demo-switcher" => a.demo_switcher = true,
             "--menu" => a.menu = true,
             "--screen" => {
                 let v = value();
-                let tab = v.strip_prefix("creative").expect("--screen takes creative[:TAB]");
-                let label = tab.strip_prefix(':').unwrap_or("buildingBlocks");
-                let found = items::creative::Tab::ALL.into_iter().find(|t| t.label() == label);
-                a.screen = Some(found.unwrap_or_else(|| panic!("--screen: no creative tab {label}")));
+                a.screen = Some(match v.as_str() {
+                    "inventory" => ScreenArg::Window(survival::gui::window::Kind::Inventory),
+                    "crafting" => ScreenArg::Window(survival::gui::window::Kind::Crafting),
+                    "chest" => ScreenArg::Window(survival::gui::window::Kind::Chest(3)),
+                    "chest_double" => ScreenArg::Window(survival::gui::window::Kind::Chest(6)),
+                    "furnace" => ScreenArg::Window(survival::gui::window::Kind::Furnace),
+                    _ => {
+                        let tab = v.strip_prefix("creative").expect("--screen takes creative[:TAB], inventory, crafting, chest, chest_double or furnace");
+                        let label = tab.strip_prefix(':').unwrap_or("buildingBlocks");
+                        let found = items::creative::Tab::ALL.into_iter().find(|t| t.label() == label);
+                        ScreenArg::Creative(found.unwrap_or_else(|| panic!("--screen: no creative tab {label}")))
+                    }
+                });
             }
+            "--survival" => a.survival = Some(false),
+            "--survival:dead" => a.survival = Some(true),
+            "--items" => a.items = true,
+            "--chests" => a.chests = true,
+            "--mobs" => a.mobs = true,
+            "--mobs:hurt" => {
+                a.mobs = true;
+                a.mob_mode = 1;
+            }
+            "--mobs:dying" => {
+                a.mobs = true;
+                a.mob_mode = 2;
+            }
+            "--mobs:love" => {
+                a.mobs = true;
+                a.mob_mode = 3;
+            }
+            "--mobs:hostile" => {
+                a.mobs = true;
+                a.mob_mode = 4;
+            }
+            "--crack" => a.crack = Some(value().parse().expect("--crack takes a stage 0 to 9")),
             "--uncapped" => a.uncapped = true,
             _ => panic!("unknown argument {flag}; see the top of main.rs"),
         }
@@ -232,6 +310,13 @@ fn parse_args() -> Args {
     a
 }
 
+/// `--screen`'s value.
+#[derive(Clone, Copy)]
+enum ScreenArg {
+    Creative(items::creative::Tab),
+    Window(survival::gui::window::Kind),
+}
+
 /// What the startup reads out of the client jar. The jar itself is closed once this is built.
 #[derive(Resource)]
 struct Loaded {
@@ -243,8 +328,29 @@ struct Loaded {
     font: Argb,
     sign: Argb,
     tabs: Argb,
-    /// `tab_items.png`, `tab_item_search.png`, `tab_inventory.png`
-    backgrounds: [Argb; 3],
+    /// `tab_items.png`, `tab_item_search.png`, `tab_inventory.png`, `inventory.png`, `crafting_table.png`
+    backgrounds: [Argb; 8],
+    /// `textures/font/ascii_sga.png`
+    galactic: Argb,
+    /// `textures/misc/enchanted_item_glint.png`
+    glint: Argb,
+    /// `textures/entity/chest/normal.png` and `normal_double.png`
+    chest: [Argb; 2],
+    /// The textures of `survival::mobs::MOBS`, in that order.
+    mobs: Vec<Argb>,
+    /// The layer textures of `survival::mobs::MOBS`, per kind and layer.
+    mob_layers: Vec<Vec<Argb>>,
+    /// `textures/blocks/fire_layer_0.png` and `_1`, with the strip's frame count and frame time
+    fire: ([Argb; 2], u32, u32),
+    /// `textures/particle/particles.png`, for the crit particles
+    particles: Argb,
+    /// `textures/models/armor/<material>_layer_1.png` and `_2` per material (players.rs `ARMOR_MATERIALS`)
+    armor: Vec<Argb>,
+    /// `textures/entity/projectiles/arrow.png` and `textures/entity/explosion.png`
+    arrow: Argb,
+    explosion: Argb,
+    /// `textures/entity/experience_orb.png`
+    xp_orb: Argb,
     empty_slots: Argb,
     lang: Vec<u8>,
 }
@@ -284,7 +390,26 @@ fn load_jar() -> io::Result<(Arc<Models>, Arc<Colors>, Argb, Loaded)> {
             png("textures/gui/container/creative_inventory/tab_items.png")?,
             png("textures/gui/container/creative_inventory/tab_item_search.png")?,
             png("textures/gui/container/creative_inventory/tab_inventory.png")?,
+            png("textures/gui/container/inventory.png")?,
+            png("textures/gui/container/crafting_table.png")?,
+            png("textures/gui/container/generic_54.png")?,
+            png("textures/gui/container/furnace.png")?,
+            png("textures/gui/container/enchanting_table.png")?,
         ],
+        galactic: png("textures/font/ascii_sga.png")?,
+        glint: png("textures/misc/enchanted_item_glint.png")?,
+        chest: [png("textures/entity/chest/normal.png")?, png("textures/entity/chest/normal_double.png")?],
+        mobs: survival::mobs::MOBS.iter().map(|m| png(m.texture)).collect::<io::Result<Vec<_>>>()?,
+        mob_layers: survival::mobs::MOBS.iter().map(|m| m.layers.iter().map(|l| png(l.texture)).collect::<io::Result<Vec<_>>>()).collect::<io::Result<Vec<_>>>()?,
+        particles: png("textures/particle/particles.png")?,
+        armor: players::ARMOR_MATERIALS.iter().flat_map(|&m| [false, true].map(|legs| png(&players::armor_texture_path(m, legs)))).collect::<io::Result<Vec<_>>>()?,
+        arrow: png("textures/entity/projectiles/arrow.png")?,
+        explosion: png("textures/entity/explosion.png")?,
+        xp_orb: png("textures/entity/experience_orb.png")?,
+        fire: {
+            let sprite = textures::load_sprite(&jar, "blocks/fire_layer_0")?;
+            ([png("textures/blocks/fire_layer_0.png")?, png("textures/blocks/fire_layer_1.png")?], sprite.frames.len() as u32, sprite.frametime)
+        },
         empty_slots: {
             let sprites = survival::gui::draw::EMPTY_SLOT_NAMES.iter().map(|n| png(&format!("textures/items/{n}.png"))).collect::<io::Result<Vec<_>>>()?;
             strip(&sprites)
@@ -440,11 +565,19 @@ fn main() {
     .insert_resource(CloudTexture(cloud_texture))
     .insert_resource(Atlas(models))
     .insert_resource(Hand::default())
-    .insert_resource(Inventory::default())
+    .insert_resource(demo_inventory(args.demo_counts))
+    .insert_resource(if args.demo_switcher { survival::gui::switcher::Switcher::demo() } else { Default::default() })
     .insert_resource(interact::Controller::default())
     .insert_resource(HideGui(args.hide_gui))
-    .insert_resource(Menu { open: false, persist: !headless, open_at_start: args.menu })
-    .insert_resource(survival::gui::creative::Creative { open_at_start: args.screen, ..default() })
+    // A streamed session leaves from the page's own Leave button.
+    .insert_resource(Menu {
+        open: args.demo_switcher,
+        persist: !headless,
+        open_at_start: args.menu,
+        quit: if streaming { None } else if joined.is_some() { Some("Disconnect") } else { Some("Quit Game") },
+    })
+    .insert_resource(survival::gui::creative::Creative { open_at_start: args.screen.and_then(|s| match s { ScreenArg::Creative(t) => Some(t), _ => None }), ..default() })
+    .insert_resource(survival::gui::window::Windows { open_at_start: args.screen.and_then(|s| match s { ScreenArg::Window(k) => Some(k), _ => None }), ..default() })
     .insert_resource(player)
     .insert_resource(Focus::default())
     .insert_resource(loaded)
@@ -453,7 +586,7 @@ fn main() {
     .insert_resource(args)
     .add_systems(
         Startup,
-        (setup, (hud::spawn_hud, hand::spawn_gui, hotbar::spawn_hotbar, target::spawn_outline, item_render::spawn_items, lod::setup, particles::spawn_mesh)).chain(),
+        (setup, (hud::spawn_hud, hand::spawn_gui, hotbar::spawn_hotbar, target::spawn_outline, item_render::spawn_items, lod::setup, particles::spawn_mesh, survival::crit::spawn_mesh)).chain(),
     )
     .add_systems(
         Update,
@@ -473,7 +606,7 @@ fn main() {
             )
                 .chain(),
             (
-                (players::apply_events, sky::advance_clock, player::run_ticks, players::tick_others, players::own_model, sfx::play, particles::tick_particles).chain(),
+                (players::apply_events, players::update_armor, sky::advance_clock, player::run_ticks, players::tick_others, players::own_model, players::inventory_model, sfx::play, particles::tick_particles).chain(),
                 input::mouse_turn,
                 sky::update_view,
                 sky::write_env,
@@ -482,10 +615,10 @@ fn main() {
                 hand::update_hand,
                 hand::update_gui,
                 hotbar::update_hotbar,
-                item_render::update_items,
+                (item_render::update_items, item_render::scroll_glint),
                 target::update_outline,
                 sync_cameras,
-                players::pose_others,
+                (players::pose_others, players::pose_held, players::finish_inventory_model).chain(),
                 particles::draw_particles,
             )
                 .chain(),
@@ -494,6 +627,9 @@ fn main() {
             .chain(),
     );
     app.add_plugins((survival::SurvivalPlugin, sign::SignPlugin));
+    if app.world().resource::<Args>().survival.is_some() {
+        app.add_systems(Startup, preview_survival);
+    }
     if streaming {
         app.add_systems(Startup, link::setup_video.before(setup))
             .add_systems(PostStartup, link::retarget_cameras)
@@ -504,11 +640,18 @@ fn main() {
     } else if let Some(joined) = joined {
         app.insert_resource(joined)
             .insert_resource(chat::Chat::default())
-            .add_systems(Startup, chat::spawn_chat)
+            .init_resource::<tablist::TabList>()
+            .add_systems(Startup, (chat::spawn_chat, tablist::spawn_tab))
             .add_systems(First, (join::watch, link::receive).chain())
             .add_systems(
                 Update,
-                (link::send.after(player::run_ticks), chat::receive, chat::keys.after(settings::toggle_menu).before(input::focus), chat::draw),
+                (
+                    link::send.after(player::run_ticks),
+                    chat::receive,
+                    chat::keys.after(settings::toggle_menu).before(input::focus),
+                    chat::draw,
+                    tablist::draw.after(chat::receive).after(chat::keys),
+                ),
             );
     } else if headless {
         // A hidden window gets no redraw requests, so keep the loop running on its own.
@@ -562,8 +705,11 @@ fn setup(
     let textures = &atlas.0.textures;
     let blocks = images.add(textures.image(settings.mipmaps));
     let params = ChunkParams::new(&textures.anim_table());
-    let chunk = |alpha_mode| ChunkMaterial { params: params.clone(), blocks: blocks.clone(), env: env.image.clone(), alpha_mode };
+    let chunk = |alpha_mode| ChunkMaterial { params: params.clone(), blocks: blocks.clone(), env: env.image.clone(), alpha_mode, crack: false };
+    let mut crack = chunk(AlphaMode::Blend);
+    crack.crack = true;
     commands.insert_resource(ChunkMaterials {
+        crack: chunk_materials.add(crack),
         solid: chunk_materials.add(chunk(AlphaMode::Opaque)),
         cutout: chunk_materials.add(chunk(AlphaMode::Mask(0.5))),
         translucent: chunk_materials.add(chunk(AlphaMode::Blend)),
@@ -600,6 +746,17 @@ fn setup(
     let skin = images.add(flat_image(&loaded.skin, false));
     commands.insert_resource(players::Skin { skin: skin.clone(), env: env.image.clone() });
     commands.insert_resource(players::Font { image: images.add(flat_image(&loaded.font, false)), widths: players::Font::widths(&loaded.font) });
+    // The glint texture is blurred (its .mcmeta) and repeats.
+    let mut glint = flat_image(&loaded.glint, false);
+    glint.sampler = bevy::image::ImageSampler::Descriptor(bevy::image::ImageSamplerDescriptor {
+        address_mode_u: bevy::image::ImageAddressMode::Repeat,
+        address_mode_v: bevy::image::ImageAddressMode::Repeat,
+        mag_filter: bevy::image::ImageFilterMode::Linear,
+        min_filter: bevy::image::ImageFilterMode::Linear,
+        ..Default::default()
+    });
+    commands.insert_resource(item_render::GlintImage(images.add(glint)));
+    commands.insert_resource(survival::gui::enchanting::Galactic(players::Font { image: images.add(flat_image(&loaded.galactic, false)), widths: players::Font::widths(&loaded.galactic) }));
     commands.spawn((
         Arm,
         Mesh3d(meshes.add(hand::arm_mesh())),
@@ -611,6 +768,18 @@ fn setup(
     ));
     commands.insert_resource(GuiIcons(images.add(flat_image(&loaded.icons, true))));
     commands.insert_resource(GuiWidgets(images.add(flat_image(&loaded.widgets, true))));
+    commands.insert_resource(survival::chest_render::ChestImages {
+        single: images.add(flat_image(&loaded.chest[0], false)),
+        double: images.add(flat_image(&loaded.chest[1], false)),
+    });
+    commands.insert_resource(survival::mobs::MobImages(loaded.mobs.iter().map(|t| images.add(flat_image(t, false))).collect()));
+    commands.insert_resource(survival::mobs::FireImages { layers: [images.add(flat_image(&loaded.fire.0[0], false)), images.add(flat_image(&loaded.fire.0[1], false))], frames: loaded.fire.1, frametime: loaded.fire.2 });
+    commands.insert_resource(survival::mobs::layer_images(&loaded.mob_layers, |t| images.add(flat_image(t, false))));
+    commands.insert_resource(players::ArmorImages(loaded.armor.iter().map(|t| images.add(flat_image(t, false))).collect()));
+    commands.insert_resource(survival::crit::CritImage(images.add(flat_image(&loaded.particles, true))));
+    commands.insert_resource(survival::arrows::ArrowImage(images.add(flat_image(&loaded.arrow, true))));
+    commands.insert_resource(survival::xp_orbs::XpOrbImage(images.add(flat_image(&loaded.xp_orb, true))));
+    commands.insert_resource(survival::explosion::ExplosionImage(images.add(flat_image(&loaded.explosion, true))));
     commands.insert_resource(sign::SignImages { world: images.add(flat_image(&loaded.sign, false)), gui: images.add(flat_image(&loaded.sign, true)) });
     commands.insert_resource(survival::gui::ContainerImages {
         tabs: images.add(flat_image(&loaded.tabs, true)),
@@ -699,7 +868,7 @@ fn apply_settings(
     streamer.set_smooth(s.smooth != Smooth::Off);
     if prev.as_ref().is_some_and(|p| p.mipmaps != s.mipmaps) {
         let blocks = images.add(atlas.0.textures.image(s.mipmaps));
-        for h in [&chunk_materials.solid, &chunk_materials.cutout, &chunk_materials.translucent] {
+        for h in [&chunk_materials.solid, &chunk_materials.cutout, &chunk_materials.translucent, &chunk_materials.crack] {
             if let Some(mut m) = materials.get_mut(h) {
                 m.blocks = blocks.clone();
             }
@@ -761,6 +930,32 @@ fn sync_cameras(
     *sky_projection = main_projection.clone();
     let hand_fov = if view.fluid == celestial::Fluid::Water { 60.0 } else { 70.0 };
     **hand_projection = projection(hand_fov, 0);
+}
+
+/// `--survival[:dead]`: survival mode with sample numbers, or the death screen.
+fn preview_survival(
+    args: Res<Args>,
+    mut player: ResMut<Player>,
+    mut state: ResMut<survival::SurvivalState>,
+    mut vitals: ResMut<survival::hurt::Vitals>,
+    mut screen: ResMut<survival::death::DeathScreen>,
+    mut menu: ResMut<Menu>,
+) {
+    let Some(dead) = args.survival else { return };
+    player.game_mode = proto::GM_SURVIVAL;
+    state.food = 15;
+    state.xp = proto::Xp { bar: 0.4, level: 7, total: 91 };
+    vitals.set_health(20.0);
+    if dead {
+        state.health = 0.0;
+        state.dead = true;
+        vitals.set_health(0.0);
+        screen.open = Some(survival::death::Screen { message: "xy fell from a high place".into(), score: state.xp.total, ticks: 20 });
+        menu.open = true;
+    } else {
+        state.health = 13.5;
+        vitals.set_health(13.5);
+    }
 }
 
 /// Smoke run: fly 23 blocks over the spawn along +x at 40 blocks per second, stepping through

@@ -448,6 +448,13 @@ impl Audio {
         Some(SoundId(id))
     }
 
+    /// `SoundHandler.stopSound`: the voice ends at once.
+    pub fn stop(&self, id: SoundId) {
+        if let Ok(mut m) = self.mixer.lock() {
+            m.voices.retain(|v| v.id != id.0);
+        }
+    }
+
     pub fn playing(&self, id: SoundId) -> bool {
         self.mixer.lock().is_ok_and(|m| m.voices.iter().any(|v| v.id == id.0))
     }

@@ -110,14 +110,26 @@ pub fn update_hud(
 }
 
 /// F3 (the game's debug screen key) or H shows and hides the stats, which start hidden; F1
-/// (`HideGui`) hides them with the rest of the GUI.
+/// (`HideGui`) hides them with the rest of the GUI. F3 toggles on release, as `Minecraft.runTickKeyboard`
+/// does, and not when another key went down while it was held (`actionKeyF3`: F3+F4 is the
+/// game mode switcher, survival/gui/switcher.rs).
 pub fn toggle_hud(
     keys: Res<ButtonInput<KeyCode>>,
     hide: Res<HideGui>,
     mut shown: Local<bool>,
+    mut combo: Local<bool>,
     mut hud: Single<&mut Visibility, With<HudText>>,
 ) {
-    if keys.any_just_pressed([KeyCode::F3, KeyCode::KeyH]) {
+    if keys.pressed(KeyCode::F3) && keys.get_just_pressed().any(|k| *k != KeyCode::F3) {
+        *combo = true;
+    }
+    if keys.just_released(KeyCode::F3) {
+        if !*combo {
+            *shown = !*shown;
+        }
+        *combo = false;
+    }
+    if keys.just_pressed(KeyCode::KeyH) && !keys.pressed(KeyCode::F3) {
         *shown = !*shown;
     }
     let v = if !*shown || hide.0 { Visibility::Hidden } else { Visibility::Inherited };

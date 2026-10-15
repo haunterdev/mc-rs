@@ -2,9 +2,14 @@
 //! declared here once.
 
 pub mod collision;
+pub mod door;
 pub mod entity;
+pub mod falling_block;
+pub mod gravity;
+pub mod placement;
 pub mod raytrace;
 pub mod region;
+pub mod states;
 pub mod terrain;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
@@ -14,6 +19,7 @@ pub mod lang;
 
 pub mod inventory;
 pub mod item_entity;
+pub mod xp_orb;
 pub mod mining;
 
 pub mod container;

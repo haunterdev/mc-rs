@@ -101,6 +101,8 @@ struct Slot {
     shown: Option<Key>,
     quads: usize,
     entities: Vec<Entity>,
+    /// The chests in the shown mesh.
+    chests: Vec<(i32, i32, i32)>,
 }
 
 impl Slot {
@@ -213,6 +215,9 @@ pub struct Streamer {
     /// shares them with the server, link.rs).
     pub share: bool,
     pub outgoing: Vec<((i32, i32, i32), u16)>,
+    /// Edit answers still to come that the server hears of through `V_USE_ON` instead of
+    /// `V_BLOCKS` (a survival placement, [`Self::edit_quiet`]).
+    pub quiet: u32,
     /// Blocks broken and placed, the player's own and the other players', for the sounds and
     /// particles (sfx.rs).
     pub events: Vec<WorldEvent>,
@@ -271,6 +276,7 @@ impl Streamer {
             busy: false,
             shown_rev: 0,
             share: false,
+            quiet: 0,
             outgoing: Vec::new(),
             events: Vec::new(),
         };
@@ -332,6 +338,11 @@ impl Streamer {
         self.slots.get(&(x >> 4, z >> 4)).and_then(|s| s.info.as_deref())
     }
 
+    /// The chests in the meshes on screen, for the tile entity renderer.
+    pub fn chests(&self) -> Vec<(i32, i32, i32)> {
+        self.slots.values().flat_map(|s| s.chests.iter().copied()).collect()
+    }
+
     /// The block state at a world position; air above and below the world. An edit shows here
     /// at once, before the chunk is meshed again.
     pub fn state_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
@@ -349,6 +360,16 @@ impl Streamer {
     /// The player's change to a block: shown at once, and sent to the populator, whose answer
     /// (`Done::Edited`) is what the world ends up with. `flags` as `World.setBlockState`.
     pub fn edit(&mut self, edits: Vec<Edit>) {
+        self.edit_with(edits, false)
+    }
+
+    /// [`Self::edit`] for a survival placement: the server places the block itself from the
+    /// `V_USE_ON`, so the change is not shared as `V_BLOCKS`.
+    pub fn edit_quiet(&mut self, edits: Vec<Edit>) {
+        self.edit_with(edits, true)
+    }
+
+    fn edit_with(&mut self, edits: Vec<Edit>, quiet: bool) {
         // A break ends with the clicked block going to air (a double plant's other half first);
         // a place starts with the placed block.
         if let Some(last) = edits.last().filter(|e| e.s == 0) {
@@ -363,7 +384,17 @@ impl Streamer {
             any |= self.set_block(e.at.0, e.at.1, e.at.2, e.s);
         }
         if any {
+            if quiet {
+                self.quiet += 1;
+            }
             let _ = self.pop.send(PopMsg::Edit(edits));
+        }
+    }
+
+    /// One game tick of flowing liquids in the populator, single player only ([`PopMsg::Tick`]).
+    pub fn tick_blocks(&mut self) {
+        if !self.share {
+            let _ = self.pop.send(PopMsg::Tick);
         }
     }
 
@@ -465,6 +496,8 @@ pub struct ChunkMaterials {
     pub solid: Handle<ChunkMaterial>,
     pub cutout: Handle<ChunkMaterial>,
     pub translucent: Handle<ChunkMaterial>,
+    /// The crack overlay's multiply blend (crack.rs).
+    pub crack: Handle<ChunkMaterial>,
 }
 
 #[derive(Component)]
@@ -523,7 +556,11 @@ pub fn stream_chunks(
                 for &((x, y, z), b) in &changes {
                     s.set_block(x, y, z, b);
                 }
-                if local && s.share {
+                let quiet = local && s.quiet > 0;
+                if quiet {
+                    s.quiet -= 1;
+                }
+                if local && s.share && !quiet {
                     // The answer ends with each edited block's final state, which repeats a
                     // change it already lists; the server keeps one record a block, the last.
                     for c in changes {
@@ -539,11 +576,12 @@ pub fn stream_chunks(
 
     // Uploads.
     for _ in 0..UPLOADS_PER_FRAME {
-        let Some((p, key, m)) = s.uploads.pop_front() else { break };
+        let Some((p, key, mut m)) = s.uploads.pop_front() else { break };
         let Some(slot) = s.slots.get_mut(&p) else { continue };
         for e in slot.entities.drain(..) {
             commands.entity(e).despawn();
         }
+        slot.chests = std::mem::take(&mut m.chests);
         s.stats.faces -= slot.quads as u64;
         slot.quads = m.quads();
         s.stats.faces += slot.quads as u64;

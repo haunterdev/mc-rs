@@ -51,6 +51,11 @@ reads the tunnel's credentials from `%USERPROFILE%\.cloudflared`. It prints the 
 first tunnel connection registers. Friends type `play.example.com` in the launcher's Join tab,
 or open it in the browser.
 
+Another local web server can share the hostname under a path. `"routes": {"/rooster": 28015}`
+in `server.json` puts a rule ahead of the web port's that sends `https://HOST/rooster` and
+everything under it to `http://127.0.0.1:28015`, path unchanged, so that server has to answer
+under `/rooster` itself (Rustlite does). A route reaches `cloudflared.yml` on the next start.
+
 On Cloudflare's free plan the domain's traffic is served from whichever colo has room, often
 far from home (measured 2026-10-14: about 100 ms ping against 48 ms for a quick tunnel from the
 same PC). `python tools/fast_link.py` starts a quick tunnel next to the running server and points
@@ -70,10 +75,11 @@ underscores; passwords at least 4 characters). The browser stays signed in for 3
 - `"open_registration": false` in `server.json` stops new names; `mc-rs-server.exe
   --set-password NAME PASSWORD` then creates accounts by hand, and resets a forgotten password.
 - `"join_password": "..."` makes new names give a server password once (guests too).
-- Play as guest (the page) and As guest (the launcher) join with no account: the name typed,
-  or `GuestNNNN` when the field is empty. A guest cannot take a name that has an account or
-  that another guest holds, is never an operator, and the token lasts a day. `"guests": false`
-  turns it off; so does `open_registration: false`.
+- Play as guest (the page) joins with no account, under the name typed or `GuestNNNN` when the
+  field is empty; the launcher's As guest joins with no name, so it is always a `GuestNNNN`.
+  A guest cannot take a name that has an account or that another guest holds, is never an
+  operator, and the token lasts a day. `"guests": false` turns it off; so does
+  `open_registration: false`.
 - `"max_players"` caps the sessions (default 4). Each session renders on this PC's GPU and
   generates terrain with `"workers"` threads (default 3).
 
@@ -100,9 +106,11 @@ tap is the pointer. Play asks for full screen where the browser allows it. Setti
 the touch controls (Auto, On, Off), the look speed and the button size.
 
 The browser remembers the sign-in (never the password), the last name and every choice above
-for the next visit. It keeps them per link, so a quick tunnel's new link each start begins
-empty: players sign in and choose again. `http://127.0.0.1:25580` and any fixed address keep
-them. The game's own Esc options are not kept between sessions yet.
+for the next visit. The saved sign-in goes only when the server answers and refuses the token;
+a server that is down or restarting, the usual state just after a relaunch, leaves it saved.
+The page keeps them per link, so a quick tunnel's new link each start begins empty: players
+sign in and choose again. `http://127.0.0.1:25580` and any fixed address keep them. The game's
+own Esc options are not kept between sessions yet.
 
 ## Joining from the launcher
 
@@ -125,8 +133,11 @@ In game, T opens chat (`/` opens it with the slash for a command) and Enter send
 plays as single player. Native players count toward `max_players`, see the browser players and
 are seen by them, and their edits land in the same world. The server checks a native player's
 edits: inside the world, within 48 blocks of where it last stood, and not in adventure or
-spectator mode. The launcher remembers the last address and name, never the password; each Join
-signs in afresh and signs out when the game closes.
+spectator mode. The launcher remembers the last address, name and sign-in token, never the password. A saved
+token is checked with `/api/me` on start, so a returning player sees Signed in as NAME and joins
+with one click; Sign out ends the sign-in and clears the token, and a token the server refuses
+brings the name and password fields back. As guest joins with no name. A guest's token is signed
+out when the game closes; an account's token stays, as the browser's does.
 
 What crosses the network: to the player the seed, where it was, the saved edits, the other
 players' names and moves, their edits, chat and command answers, the clock, teleports and the
@@ -230,6 +241,7 @@ the backup folder still holds its copies of them for a manual restore.
 | `render_distance` | 8 | chunks around each player |
 | `tunnel`, `cloudflared` | true, found | the Cloudflare tunnel and where cloudflared is |
 | `tunnel_name`, `hostname` | empty | a named tunnel and the hostname it serves, instead of a quick tunnel (see [A fixed address](#a-fixed-address)) |
+| `routes` | empty | path prefixes on the named tunnel's hostname sent to other local ports, `{"/rooster": 28015}` |
 | `viewer` | found | the viewer exe, when it is not next to the server |
 | `guests` | true | Play as guest without an account |
 | `commands` | `everyone` | who may run the commands that change the world or other players: `everyone` or `ops` |

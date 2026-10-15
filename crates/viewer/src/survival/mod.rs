@@ -14,18 +14,27 @@
 
 use bevy::prelude::*;
 
+pub mod arrows;
+pub mod xp_orbs;
 mod attack;
-mod chest_render;
-mod crack;
-mod death;
+pub mod crit;
+pub mod chest_render;
+pub mod crack;
+pub mod death;
+pub mod effects;
+pub mod explosion;
 mod falling;
 pub mod gui;
 mod hud;
-mod hurt;
+pub mod hurt;
 mod items;
-mod mining;
-mod mobs;
+pub mod item_use;
+mod jukebox;
+pub mod mining;
+pub(crate) mod mobs;
+mod sound;
 pub mod net;
+pub mod overlay;
 
 pub struct SurvivalPlugin;
 
@@ -56,18 +65,30 @@ impl Plugin for SurvivalPlugin {
             .add_message::<BlockAction>()
             .add_message::<Sound>()
             .add_message::<Explosion>()
+            .add_message::<EffectIn>()
+            .add_message::<EffectOut>()
+            .add_message::<WorldEvent>()
             .add_systems(PreUpdate, (net::dispatch, apply_state).chain());
+        overlay::plugin(app);
         hud::plugin(app);
         death::plugin(app);
+        effects::plugin(app);
         hurt::plugin(app);
         items::plugin(app);
+        sound::plugin(app);
         mining::plugin(app);
         crack::plugin(app);
         gui::plugin(app);
         mobs::plugin(app);
         attack::plugin(app);
+        crit::plugin(app);
         chest_render::plugin(app);
         falling::plugin(app);
+        arrows::plugin(app);
+        xp_orbs::plugin(app);
+        explosion::plugin(app);
+        item_use::plugin(app);
+        jukebox::plugin(app);
     }
 }
 
@@ -172,6 +193,15 @@ mod messages {
     /// `S_EXPLOSION`.
     #[derive(Message, Clone, Debug, PartialEq)]
     pub struct Explosion(pub proto::Explosion);
+    /// `S_EFFECT`: `SPacketEntityEffect`.
+    #[derive(Message, Clone, Debug, PartialEq)]
+    pub struct EffectIn(pub proto::EntityEffect);
+    /// `S_REMOVE_EFFECT`: `SPacketRemoveEntityEffect`.
+    #[derive(Message, Clone, Debug, PartialEq)]
+    pub struct EffectOut(pub proto::RemoveEffect);
+    /// `S_WORLD_EVENT`: `SPacketEffect`.
+    #[derive(Message, Clone, Debug, PartialEq)]
+    pub struct WorldEvent(pub proto::WorldEvent);
 }
 pub use messages::*;
 // Bevy's prelude has an `EntityEvent` trait; this module's name is the message.

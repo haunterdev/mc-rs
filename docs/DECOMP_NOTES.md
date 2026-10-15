@@ -435,6 +435,20 @@ is a port too, so its pitfalls go here. Assets come from the local client jar at
 - `mergeItemStack`'s top-up loop ignores the target slot's limit; the armor slots stay at one
   only because `ContainerPlayer.transferStackInSlot` targets an armor slot when it is empty.
 
+## Health and damage pitfalls (`crates/server/src/game/players.rs`, `damage.rs`)
+
+- The ladder and vine fall reset lives in `EntityLivingBase.travel`, not in `processPlayer`, and only
+  runs when the player is in neither water nor lava; a player on a ladder resets on the tick.
+- `Entity.handleWaterMovement` zeroes `fallDistance` every tick, so a fall into water costs nothing
+  whatever the height; `updateFallState` ignores the landing step's own dy (only earlier airborne
+  steps count), so a 23 block fall needs 23 airborne dy before the ground state.
+- `EntityPlayerMP.onDeath` does not call `super.onDeath`: no entity event 3, no `EntityPlayer.onDeath`.
+  The inventory drop is its own `keepInventory`/spectator check.
+- `FoodStats.onUpdate` takes one 4.0 of exhaustion per tick, so 10.0 exhaustion drains over two ticks.
+- `EntityPlayerMP.attackEntityFrom` lets fall damage through respawn protection when pvp is on
+  (dedicated server); only `OUT_OF_WORLD` always passes.
+- Design numbers (23 blocks kills, 3.5 costs 1, sprint 100 blocks = 10.0) all match the source.
+
 ## How the port is checked
 
 `harness/` drives the real `ChunkGeneratorOverworld` in a JVM through a minimal `World`

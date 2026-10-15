@@ -49,9 +49,10 @@ fn the_thread_ticks_20_times_a_second() {
     let elapsed = started.elapsed();
     tx.send(GameMsg::Shutdown).unwrap();
     let g = thread.join().unwrap();
-    // Deadlines are absolute, so a busy machine makes the ticks late, never fewer.
+    // Never faster than 20 a second. A loaded test machine can stall the thread past the
+    // catch-up limit (the drop rule is pinned by the fake clock test below), so the floor is loose.
     let expected = elapsed.as_millis() as i64 / 50 + 1;
-    assert!((g.ticks as i64 - expected).abs() <= 3, "{} ticks in {elapsed:?}", g.ticks);
+    assert!(g.ticks as i64 <= expected + 3 && g.ticks >= 5, "{} ticks in {elapsed:?}", g.ticks);
 }
 
 #[test]
@@ -101,8 +102,8 @@ fn join_frames_state_and_leave_reach_the_hooks() {
     tx.send(GameMsg::GameMode { id: 2, mode: proto::GM_CREATIVE }).unwrap();
     g.tick();
     assert!(g.sessions[&1].survival_client);
-    // The client info is the game's own; nothing takes the respawn until T4.
-    assert_eq!((g.stats.frames, g.stats.frames_unhandled), (2, 1));
+    // The client info is the game's own; damage.rs takes the respawn.
+    assert_eq!((g.stats.frames, g.stats.frames_unhandled), (2, 0));
     assert_eq!(g.sessions[&2].state.map(|s| s.pos), Some([1.0, 64.0, 2.0]));
     assert_eq!(g.sessions[&2].mode, proto::GM_CREATIVE);
     tx.send(GameMsg::Leave { id: 1 }).unwrap();
@@ -193,7 +194,7 @@ async fn a_hub_session_reaches_the_game() {
     }
     let me = g.sessions.values().next().unwrap();
     assert_eq!((me.name.as_str(), me.survival_client, me.mode), ("xy", true, crate::world::DEFAULT_GAME_MODE));
-    assert_eq!(g.stats.frames_unhandled, 1);
+    assert_eq!(g.stats.frames_unhandled, 0);
 
     drop(in_tx);
     session.await.unwrap();

@@ -6,7 +6,10 @@
 //! Every registered item gets a model: the block half of the table is `blocks.rs`, the item half
 //! and the mesh definitions `item_table.rs`.
 //!
-//! DROPPED: item model `overrides` (the bow pulling, the clock and compass hands, the fishing
+//! The bow's `overrides` (`ItemBow` `pull` and `pulling`) pick `bow_pulling_0` to `_2` ([`pulling_key`]),
+//! kept under the bow's metadata 1 to 3 (a damageable item's own key is meta 0).
+//!
+//! DROPPED: the other item model `overrides` (the clock and compass hands, the fishing
 //! rod cast, the broken elytra, the blocking shield); each stack shows its base model.
 //! DROPPED: the enchantment glint (`hasEffect`: enchanted books, the enchanted golden apple,
 //! potions); there is no NBT to enchant a stack with and no glint pass.
@@ -21,7 +24,7 @@ use std::sync::OnceLock;
 
 use bevy::math::{Mat4, Quat, Vec3};
 use items::ids::item;
-use items::ItemStack;
+use items::{ItemStack, Tag};
 use serde_json::Value;
 use worldgen::blocks::id;
 use worldgen::math_helper::{cos, sin};
@@ -62,6 +65,18 @@ impl Display {
             * Mat4::from_quat(make_quaternion(x, y, z))
             * Mat4::from_scale(Vec3::from_array(self.scale))
     }
+
+    /// `ItemCameraTransforms.applyTransformSide` with `leftHand = true`: the x translation is
+    /// negated and the y and z rotations are, as the left hand mirrors the right.
+    pub fn matrix_left(&self) -> Mat4 {
+        if *self == Display::DEFAULT {
+            return Mat4::IDENTITY;
+        }
+        let [x, y, z] = self.rotation;
+        Mat4::from_translation(Vec3::new(-self.translation[0], self.translation[1], self.translation[2]))
+            * Mat4::from_quat(make_quaternion(x, -y, -z))
+            * Mat4::from_scale(Vec3::from_array(self.scale))
+    }
 }
 
 /// `ItemTransformVec3f.makeQuaternion`: degrees about x, then y, then z.
@@ -93,8 +108,31 @@ fn definition(item: u16) -> Option<&'static str> {
 /// ([`model_key`]): the `simpleShapes` entry, else the item's `ItemMeshDefinition`. The model is
 /// `item/<name>`. `None` where vanilla shows the missing model.
 pub fn item_model_name(item: u16, meta: u16) -> Option<&'static str> {
+    if item == self::item::BOW && (1..=3).contains(&meta) {
+        return Some(BOW_PULLING[meta as usize - 1]);
+    }
     registered().get(&(item, meta)).copied().or_else(|| definition(item))
 }
+
+/// The bow's pulling models, `models/item/bow.json`'s overrides in the order of their thresholds.
+const BOW_PULLING: [&str; 3] = ["bow_pulling_0", "bow_pulling_1", "bow_pulling_2"];
+
+/// `ItemOverrideList.handleItemState` for the bow: with `pulling` 1 (the bow is the item in use) the
+/// model is `bow_pulling_0`, from `pull` 0.65 `bow_pulling_1`, from 0.9 `bow_pulling_2`. `pull` is
+/// `(getMaxItemUseDuration - getItemInUseCount) / 20`. `None` for any other stack or an idle bow.
+pub fn pulling_key(stack: &ItemStack, using: &crate::hand::InUse) -> Option<(u16, u16)> {
+    if stack.is_empty() || stack.get_item() != self::item::BOW || !using.bow || using.count <= 0 {
+        return None;
+    }
+    let pull = (using.max - using.count) as f32 / 20.0;
+    let n = if pull >= 0.9 { 3 } else if pull >= 0.65 { 2 } else { 1 };
+    Some((self::item::BOW, n))
+}
+
+/// The model key meta of a potion item of `PotionType` id `p`: `POTION_META + p`. The model is the
+/// item's own, baked once more with the type's colour (the stack's NBT reaches `ItemColors` in
+/// vanilla; here a tagged stack picks its own copy).
+pub const POTION_META: u16 = 0x100;
 
 /// The key a stack's model is kept under: the item and `ItemModelMesher.getMetadata(stack)` (0
 /// for a damageable item). An item with an `ItemMeshDefinition` has one model, kept at meta 0.
@@ -103,6 +141,10 @@ pub fn model_key(stack: &ItemStack) -> Option<(u16, u16)> {
         return None;
     }
     let it = stack.get_item();
+    // A tagged potion item keeps a model per type, tinted by PotionUtils.getColor (see POTION_META).
+    if let (true, Tag::Potion(p @ 1..)) = (items::tooltip::is_potion_item(it), stack.tag) {
+        return Some((it, POTION_META + p as u16));
+    }
     if definition(it).is_some() {
         return Some((it, 0));
     }
@@ -114,6 +156,7 @@ pub fn model_key(stack: &ItemStack) -> Option<(u16, u16)> {
 /// definition's item at meta 0.
 pub fn item_keys() -> Vec<(u16, u16)> {
     let mut keys: Vec<(u16, u16)> = registered().keys().copied().chain(item_table::DEFINITIONS.iter().map(|d| (d.0, 0))).collect();
+    keys.extend((1..=3).map(|n| (self::item::BOW, n)));
     keys.sort_unstable();
     keys
 }
@@ -186,6 +229,14 @@ pub struct ItemModel {
     pub quads: Vec<Quad>,
     pub gui: Display,
     pub first_person: Display,
+    /// `FIRST_PERSON_LEFT_HAND`: the off hand (`ItemRenderer.renderItemInFirstPerson`).
+    pub first_person_left: Display,
+    /// `THIRD_PERSON_RIGHT_HAND`: in another player's hand (`LayerHeldItem`).
+    pub third_person: Display,
+    /// `THIRD_PERSON_LEFT_HAND`: the off hand of another player (`LayerHeldItem`).
+    pub third_person_left: Display,
+    /// `GROUND`: a dropped item (`RenderEntityItem`).
+    pub ground: Display,
     /// `IBakedModel.isGui3d`: block models are lit in the GUI, generated ones are not.
     pub gui3d: bool,
 }
@@ -200,6 +251,11 @@ pub fn bake_items(sources: &[((u16, u16), ModelBlock)], textures: &BlockTextures
         // ModelBlock.getAllTransforms: the nearest model in the chain that sets each one.
         let gui = m.display("gui").unwrap_or(Display::DEFAULT);
         let first_person = m.display("firstperson_righthand").unwrap_or(Display::DEFAULT);
+        let third_person = m.display("thirdperson_righthand").unwrap_or(Display::DEFAULT);
+        // `ItemCameraTransforms.Deserializer`: the left hand falls back to the right's.
+        let first_person_left = m.display("firstperson_lefthand").or_else(|| m.display("firstperson_righthand")).unwrap_or(Display::DEFAULT);
+        let third_person_left = m.display("thirdperson_lefthand").or_else(|| m.display("thirdperson_righthand")).unwrap_or(Display::DEFAULT);
+        let ground = m.display("ground").unwrap_or(Display::DEFAULT);
         let (quads, gui3d) = if generated(m) {
             let mut quads = Vec::new();
             for (layer, name) in layer_textures(m).iter().enumerate() {
@@ -216,16 +272,33 @@ pub fn bake_items(sources: &[((u16, u16), ModelBlock)], textures: &BlockTextures
             let b = bake_model(m, &rot, &info)?;
             (b.face_quads.into_iter().flatten().chain(b.general).collect(), true)
         };
-        out.insert(*key, ItemModel { quads, gui, first_person, gui3d });
+        out.insert(*key, ItemModel { quads, gui, first_person, first_person_left, third_person, third_person_left, ground, gui3d });
+    }
+    // One copy of each potion item's model per PotionType, for the type's colour.
+    for it in [item::POTIONITEM, item::SPLASH_POTION, item::LINGERING_POTION, item::TIPPED_ARROW] {
+        if let Some(m) = out.get(&(it, 0)).cloned() {
+            for p in 1..items::creative_table::POTIONS.len() as u16 {
+                out.insert((it, POTION_META + p), m.clone());
+            }
+        }
     }
     Ok(out)
+}
+
+/// `PotionUtils.getColor` for the model meta [`model_key`] gives a potion item.
+fn potion_meta_color(meta: u16) -> i32 {
+    match meta.checked_sub(POTION_META) {
+        Some(p) => items::creative::potion(p as u8).color as i32,
+        None => 16_253_176,
+    }
 }
 
 /// `ItemColors.colorMultiplier` for a stack with no NBT, as RGB; white where vanilla returns -1.
 /// The handlers for grass, tall grass, vines, leaves and lily pads ask `BlockColors` with no
 /// world, which takes their default colors. The NBT colors (dyed leather, potion effects,
 /// firework charge colors, spawn egg mobs, map colors) are DROPPED with NBT: each stack takes
-/// the color its handler gives an untagged stack.
+/// the color its handler gives an untagged stack, except a potion item, whose type rides in the
+/// model meta ([`POTION_META`]).
 pub fn item_color(it: u16, meta: u16, tint: i32, colors: &Colors) -> u32 {
     // RenderItem.renderQuads: only quads with a tint index ask ItemColors.
     if tint < 0 {
@@ -256,17 +329,18 @@ pub fn item_color(it: u16, meta: u16, tint: i32, colors: &Colors) -> u32 {
                 9_079_434
             }
         }
-        // PotionUtils.getColor: PotionTypes.EMPTY.
+        // PotionUtils.getColor: a tagged stack's type ([`model_key`] puts it in the meta),
+        // PotionTypes.EMPTY otherwise.
         item::POTIONITEM | item::SPLASH_POTION | item::LINGERING_POTION => {
             if tint > 0 {
                 -1
             } else {
-                16_253_176
+                potion_meta_color(meta)
             }
         }
         item::TIPPED_ARROW => {
             if tint == 0 {
-                16_253_176
+                potion_meta_color(meta)
             } else {
                 -1
             }
@@ -370,6 +444,11 @@ mod tests {
         assert_eq!(item_color(item::LEATHER_CHESTPLATE, 0, 0, &c), 0xA0_6540);
         assert_eq!(item_color(item::LEATHER_CHESTPLATE, 0, 1, &c), 0xFF_FFFF);
         assert_eq!(item_color(item::POTIONITEM, 0, 0, &c), 0xF8_00F8);
+        let healing = ItemStack::of(item::SPLASH_POTION).with_tag(Tag::Potion(items::creative::potion_id("minecraft:healing")));
+        let (k, m) = model_key(&healing).unwrap();
+        assert_eq!(item_color(k, m, 0, &c), 0xF8_2423);
+        assert_eq!(item_color(k, m, 1, &c), 0xFF_FFFF, "the bottle layer is not tinted");
+        assert_eq!(model_key(&ItemStack::of(item::POTIONITEM)), Some((item::POTIONITEM, 0)));
         assert_eq!(item_color(item::FILLED_MAP, 0, 1, &c), 0x46_402E);
         assert_eq!(item_color(item::SPAWN_EGG, 0, 0, &c), 0xFF_FFFF);
         assert_eq!(item_color(id::LEAVES, 2, 0, &c), 8_431_445);

@@ -5,15 +5,16 @@
 #import bevy_pbr::{forward_io::VertexOutput, mesh_view_bindings::view}
 #import bevy_render::color_operations::srgb_to_linear
 
-struct EntityParams {
-    // Lightmap coordinates (block, sky) in 0..240.
-    light: vec4<f32>,
-}
-
 @group(#{MATERIAL_BIND_GROUP}) @binding(0) var env: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(1) var skin: texture_2d<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(2) var skin_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(3) var<uniform> params: EntityParams;
+@group(#{MATERIAL_BIND_GROUP}) @binding(3) var<uniform> light_params: vec4<f32>;
+// x, y: added to the texture coordinates; z: the color of an unlit draw; w: flags, bit 0 no
+// lighting from the normal (disableLighting), bit 1 fog toward black (setupFogColor(true)).
+@group(#{MATERIAL_BIND_GROUP}) @binding(4) var<uniform> fx_params: vec4<f32>;
+// light_params: lightmap coordinates (block, sky) in 0..240 in x and y; z is the strength of the
+// red hurt overlay (RenderLivingBase.setBrightness), w the strength of the white flash of
+// RenderLiving.getColorMultiplier (a creeper's fuse).
 
 const P_FOG_COLOR: i32 = 0;
 const P_FOG: i32 = 1;
@@ -35,7 +36,7 @@ fn lightmap(c: vec2<f32>) -> vec3<f32> {
     return mix(mix(a, b, f.x), mix(c0, d, f.x), f.y);
 }
 
-fn apply_fog(rgb: vec3<f32>, dist: f32) -> vec3<f32> {
+fn apply_fog(rgb: vec3<f32>, dist: f32, black: bool) -> vec3<f32> {
     let fog = env_param(P_FOG);
     var f: f32;
     if fog.w < 0.5 {
@@ -43,21 +44,37 @@ fn apply_fog(rgb: vec3<f32>, dist: f32) -> vec3<f32> {
     } else {
         f = exp(-fog.z * dist);
     }
-    return mix(env_param(P_FOG_COLOR).rgb, rgb, clamp(f, 0.0, 1.0));
+    var fog_color = env_param(P_FOG_COLOR).rgb;
+    if black {
+        fog_color = vec3(0.0);
+    }
+    return mix(fog_color, rgb, clamp(f, 0.0, 1.0));
 }
 
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
-    let tex = textureSample(skin, skin_sampler, in.uv);
+    let tex = textureSample(skin, skin_sampler, in.uv + fx_params.xy);
     // alphaFunc(GL_GREATER, 0.1)
     if tex.a <= 0.1 {
         discard;
     }
+    let flags = u32(fx_params.w);
     let n = normalize(in.world_normal);
     let l0 = normalize(vec3(0.2, 1.0, -0.7));
     let l1 = normalize(vec3(-0.2, 1.0, 0.7));
-    let light = min(0.4 + 0.6 * max(dot(n, l0), 0.0) + 0.6 * max(dot(n, l1), 0.0), 1.0);
-    var rgb = tex.rgb * light * lightmap(params.light.xy);
-    rgb = apply_fog(rgb, distance(in.world_position.xyz, view.world_position));
+    var light = min(0.4 + 0.6 * max(dot(n, l0), 0.0) + 0.6 * max(dot(n, l1), 0.0), 1.0);
+    if (flags & 1u) != 0u {
+        light = fx_params.z;
+    }
+    // The overlay is an INTERPOLATE of the lit texel towards red (hurt, which setBrightness
+    // checks first) or white (the flash), before the lightmap multiplies.
+    var overlay = vec3(1.0, 0.0, 0.0);
+    var strength = light_params.z;
+    if strength <= 0.0 {
+        overlay = vec3(1.0);
+        strength = light_params.w;
+    }
+    var rgb = mix(tex.rgb * light, overlay, strength) * lightmap(light_params.xy);
+    rgb = apply_fog(rgb, distance(in.world_position.xyz, view.world_position), (flags & 2u) != 0u);
     return vec4(srgb_to_linear(rgb), 1.0);
 }

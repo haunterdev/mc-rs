@@ -111,8 +111,13 @@ fn tls(host: &str, tcp: TcpStream) -> Result<Conn, String> {
     Ok(Conn::Tls(Box::new(rustls::StreamOwned::new(conn, tcp))))
 }
 
+/// A read timeout, not a dead line. std's Windows sockets are overlapped, and a receive that times
+/// out there can come back as ERROR_IO_PENDING (os error 997) instead of WSAETIMEDOUT; tungstenite
+/// keeps the partial frame and the unsent bytes, so the next call carries on.
 fn would_block(e: &tungstenite::Error) -> bool {
-    matches!(e, tungstenite::Error::Io(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut))
+    const ERROR_IO_PENDING: i32 = 997;
+    matches!(e, tungstenite::Error::Io(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+        || (cfg!(windows) && e.raw_os_error() == Some(ERROR_IO_PENDING)))
 }
 
 /// The reason in a page's `{"t":"closed","text":...}`.
@@ -276,8 +281,9 @@ fn session(ws: &mut WebSocket<Conn>, out: &Receiver<Vec<u8>>, inbox: &Sender<(u8
         // The server answers a ping even when nothing else happens; a long silence is a dead line.
         if last_ping.elapsed() > PING {
             last_ping = Instant::now();
-            if let Err(e) = ws.send(Message::Ping(Vec::new().into())) {
-                return End::Dropped(format!("the connection broke ({e})"));
+            match ws.send(Message::Ping(Vec::new().into())) {
+                Err(e) if !would_block(&e) => return End::Dropped(format!("the connection broke ({e})")),
+                _ => {}
             }
         }
         let mut batch = Vec::new();
@@ -294,8 +300,10 @@ fn session(ws: &mut WebSocket<Conn>, out: &Receiver<Vec<u8>>, inbox: &Sender<(u8
             }
         }
         if !batch.is_empty() {
-            if let Err(e) = ws.send(Message::Binary(batch.into())) {
-                return End::Dropped(format!("the connection broke ({e})"));
+            // A would-block send stays queued in tungstenite and goes out with the next write or read.
+            match ws.send(Message::Binary(batch.into())) {
+                Err(e) if !would_block(&e) => return End::Dropped(format!("the connection broke ({e})")),
+                _ => {}
             }
         }
         match ws.read() {

@@ -57,6 +57,22 @@ impl Env {
         }
     }
 
+    /// The lightmap's `GL_LINEAR` lookup at coordinates `(block, sky)` in 0..=240, RGB in 0..=1:
+    /// what the fixed-function path gives a draw whose entity set `setLightmapTextureCoords`.
+    pub fn light_rgb(&self, block: f32, sky: f32) -> [f32; 3] {
+        let (u, v) = ((block / 16.0).clamp(0.0, 15.0), (sky / 16.0).clamp(0.0, 15.0));
+        let (u0, v0) = (u.floor(), v.floor());
+        let (fu, fv) = (u - u0, v - v0);
+        let (u0, v0) = (u0 as usize, v0 as usize);
+        let (u1, v1) = ((u0 + 1).min(15), (v0 + 1).min(15));
+        let t = |x: usize, y: usize| self.data[y * WIDTH as usize + x];
+        std::array::from_fn(|ch| {
+            let top = t(u0, v0)[ch] * (1.0 - fu) + t(u1, v0)[ch] * fu;
+            let bottom = t(u0, v1)[ch] * (1.0 - fu) + t(u1, v1)[ch] * fu;
+            top * (1.0 - fv) + bottom * fv
+        })
+    }
+
     pub fn set(&mut self, slot: usize, v: [f32; 4]) {
         *self.texel(slot, 16) = v;
     }

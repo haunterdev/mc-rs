@@ -8,7 +8,7 @@ use worldgen::populate::state::mat;
 use crate::crafting::WILDCARD;
 use crate::ids::{block, item};
 use crate::registry::{self, block_from_item, item_from_block, Kind};
-use crate::stack::{are_item_stack_tags_equal, ItemStack, Tag};
+use crate::stack::{are_item_stack_tags_equal, ItemStack};
 use crate::tools::ToolMaterial;
 
 /// One `FurnaceRecipes` entry: `smeltingList` input to output, `experienceList` output to xp.
@@ -22,8 +22,8 @@ pub struct Smelting {
 
 const fn s(input: u16, meta: i32, output: u16, count: i32, out_meta: i32, experience: f32) -> Smelting {
     Smelting {
-        input: ItemStack { item: input, count: 1, damage: meta, tag: Tag::None },
-        output: ItemStack { item: output, count, damage: out_meta, tag: Tag::None },
+        input: ItemStack::new(input, 1, meta),
+        output: ItemStack::new(output, count, out_meta),
         experience,
     }
 }
